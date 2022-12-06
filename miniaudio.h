@@ -38,7 +38,7 @@ A config/init pattern is used throughout the entire library. The idea is that yo
 object and pass that into the initialization routine. The advantage to this system is that the
 config object can be initialized with logical defaults and new properties added to it without
 breaking the API. The config object can be allocated on the stack and does not need to be
-maintained after initialization of the corresponding object. 
+maintained after initialization of the corresponding object.
 
 
 1.1. Low Level API
@@ -363,7 +363,7 @@ initialized. The easiest but least flexible way of playing a sound is like so:
 This plays what miniaudio calls an "inline" sound. It plays the sound once, and then puts the
 internal sound up for recycling. The last parameter is used to specify which sound group the sound
 should be associated with which will be explained later. This particular way of playing a sound is
-simple, but lacks flexibility and features. A more flexible way of playing a sound is to first 
+simple, but lacks flexibility and features. A more flexible way of playing a sound is to first
 initialize a sound:
 
     ```c
@@ -459,6 +459,8 @@ is at the end, use `ma_sound_at_end()`. Looping of a sound can be controlled wit
 ===========
 miniaudio should work cleanly out of the box without the need to download or install any
 dependencies. See below for platform-specific details.
+
+Note that GCC and Clang require `-msse2`, `-mavx2`, etc. for SIMD optimizations.
 
 
 2.1. Windows
@@ -768,7 +770,7 @@ you could plug in a decoder like so:
     ma_uint64 framesRead;
     ma_decoder decoder;   // <-- This would be initialized with `ma_decoder_init_*()`.
 
-    result = ma_data_source_read_pcm_frames(&decoder, pFramesOut, frameCount, &framesRead, loop);
+    result = ma_data_source_read_pcm_frames(&decoder, pFramesOut, frameCount, &framesRead);
     if (result != MA_SUCCESS) {
         return result;  // Failed to read data from the decoder.
     }
@@ -822,7 +824,7 @@ retrieved like so:
     ma_uint32 channels;
     ma_uint32 sampleRate;
     ma_channel channelMap[MA_MAX_CHANNELS];
-    
+
     result = ma_data_source_get_data_format(pDataSource, &format, &channels, &sampleRate, channelMap, MA_MAX_CHANNELS);
     if (result != MA_SUCCESS) {
         return result;  // Failed to retrieve data format.
@@ -878,7 +880,7 @@ To do this, you can use chaining:
     ```
 
 In the example above we're using decoders. When reading from a chain, you always want to read from
-the top level data source in the chain. In the example above, `decoder1` is the top level data 
+the top level data source in the chain. In the example above, `decoder1` is the top level data
 source in the chain. When `decoder1` reaches the end, `decoder2` will start seamlessly without any
 gaps.
 
@@ -971,7 +973,7 @@ base object (`ma_data_source_base`):
     void my_data_source_uninit(my_data_source* pMyDataSource)
     {
         // ... do the uninitialization of your custom data source here ...
-        
+
         // You must uninitialize the base data source.
         ma_data_source_uninit(&pMyDataSource->base);
     }
@@ -2561,7 +2563,7 @@ The `ma_decoding_backend_vtable` vtable has the following functions:
 
     ```
     onInit
-    onInitFile 
+    onInitFile
     onInitFileW
     onInitMemory
     onUninit
@@ -3347,8 +3349,8 @@ The noise API uses simple LCG random number generation. It supports a custom see
 for things like automated testing requiring reproducibility. Setting the seed to zero will default
 to `MA_DEFAULT_LCG_SEED`.
 
-The amplitude, seed, and type can be changed dynamically with `ma_noise_set_amplitude()`,
-`ma_noise_set_seed()`, and `ma_noise_set_type()` respectively.
+The amplitude and seed can be changed dynamically with `ma_noise_set_amplitude()` and
+`ma_noise_set_seed()` respectively.
 
 By default, the noise API will use different values for different channels. So, for example, the
 left side in a stereo stream will be different to the right side. To instead have each channel use
@@ -3601,6 +3603,12 @@ Some backends have some nuance details you may want to be aware of.
   miniaudio's built-in resampler is to take advantage of any potential device-specific
   optimizations the driver may implement.
 
+BSD
+---
+- The sndio backend is currently only enabled on OpenBSD builds.
+- The audio(4) backend is supported on OpenBSD, but you may need to disable sndiod before you can
+  use it.
+
 15.4. UWP
 ---------
 - UWP only supports default playback and capture devices.
@@ -3631,14 +3639,28 @@ Some backends have some nuance details you may want to be aware of.
 
 16. Optimization Tips
 =====================
+See below for some tips on improving performance.
 
-16.1. High Level API
+16.1. Low Level API
+-------------------
+- In the data callback, if your data is already clipped prior to copying it into the output buffer,
+  set the `noClip` config option in the device config to true. This will disable miniaudio's built
+  in clipping function.
+- By default, miniaudio will pre-silence the data callback's output buffer. If you know that you
+  will always write valid data to the output buffer you can disable pre-silencing by setting the
+  `noPreSilence` config option in the device config to true.
+
+16.2. High Level API
 --------------------
 - If a sound does not require doppler or pitch shifting, consider disabling pitching by
   initializing the sound with the `MA_SOUND_FLAG_NO_PITCH` flag.
 - If a sound does not require spatialization, disable it by initializing the sound with the
   `MA_SOUND_FLAG_NO_SPATIALIZATION` flag. It can be re-enabled again post-initialization with
   `ma_sound_set_spatialization_enabled()`.
+- If you know all of your sounds will always be the same sample rate, set the engine's sample
+  rate to match that of the sounds. Likewise, if you're using a self-managed resource manager,
+  consider setting the decoded sample rate to match your sounds. By configuring everything to
+  use a consistent sample rate, sample rate conversion can be avoided.
 
 
 
@@ -3647,17 +3669,6 @@ Some backends have some nuance details you may want to be aware of.
 - Automatic stream routing is enabled on a per-backend basis. Support is explicitly enabled for
   WASAPI and Core Audio, however other backends such as PulseAudio may naturally support it, though
   not all have been tested.
-- The contents of the output buffer passed into the data callback will always be pre-initialized to
-  silence unless the `noPreSilencedOutputBuffer` config variable in `ma_device_config` is set to
-  true, in which case it'll be undefined which will require you to write something to the entire
-  buffer.
-- By default miniaudio will automatically clip samples. This only applies when the playback sample
-  format is configured as `ma_format_f32`. If you are doing clipping yourself, you can disable this
-  overhead by setting `noClip` to true in the device config.
-- Note that GCC and Clang requires `-msse2`, `-mavx2`, etc. for SIMD optimizations.
-- The sndio backend is currently only enabled on OpenBSD builds.
-- The audio(4) backend is supported on OpenBSD, but you may need to disable sndiod before you can
-  use it.
 - When compiling with VC6 and earlier, decoding is restricted to files less than 2GB in size. This
   is due to 64-bit file APIs not being available.
 */
@@ -3689,7 +3700,7 @@ extern "C" {
         #pragma GCC diagnostic ignored "-Wc11-extensions"   /* anonymous unions are a C11 extension */
     #endif
 #endif
-  
+
 
 
 #if defined(__LP64__) || defined(_WIN64) || (defined(__x86_64__) && !defined(__ILP32__)) || defined(_M_X64) || defined(__ia64) || defined(_M_IA64) || defined(__aarch64__) || defined(_M_ARM64) || defined(__powerpc64__)
@@ -3805,7 +3816,11 @@ typedef ma_uint16 wchar_t;
 
     #ifdef __unix__
         #define MA_UNIX
-        #if defined(__DragonFly__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+        #ifdef __ORBIS__
+            #define MA_ORBIS
+        #elif defined(__PROSPERO__)
+            #define MA_PROSPERO
+        #elif defined(__DragonFly__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
             #define MA_BSD
         #endif
     #endif
@@ -3821,8 +3836,24 @@ typedef ma_uint16 wchar_t;
     #ifdef __EMSCRIPTEN__
         #define MA_EMSCRIPTEN
     #endif
+    #if defined(__NX__)
+        #define MA_NX
+    #endif
 #endif
 
+#if defined(__has_c_attribute)
+    #if __has_c_attribute(fallthrough)
+        #define MA_FALLTHROUGH [[fallthrough]]
+    #endif
+#endif
+#if !defined(MA_FALLTHROUGH) && defined(__has_attribute) && (defined(__clang__) || defined(__GNUC__))
+    #if __has_attribute(fallthrough)
+        #define MA_FALLTHROUGH __attribute__((fallthrough))
+    #endif
+#endif
+#if !defined(MA_FALLTHROUGH)
+    #define MA_FALLTHROUGH ((void)0)
+#endif
 
 #ifdef _MSC_VER
     #define MA_INLINE __forceinline
@@ -4072,6 +4103,7 @@ typedef enum
     MA_API_NOT_FOUND                  = -105,
     MA_INVALID_DEVICE_CONFIG          = -106,
     MA_LOOP                           = -107,
+    MA_BACKEND_NOT_ENABLED            = -108,
 
     /* State errors. */
     MA_DEVICE_NOT_INITIALIZED         = -200,
@@ -4088,7 +4120,7 @@ typedef enum
 
 
 #define MA_MIN_CHANNELS                 1
-#ifndef MA_MAX_CHANNELS                 
+#ifndef MA_MAX_CHANNELS
 #define MA_MAX_CHANNELS                 254
 #endif
 
@@ -4342,7 +4374,7 @@ Logging
     #endif
 #endif
 #ifndef MA_ATTRIBUTE_FORMAT
-#define MA_ATTRIBUTE_FORMAT(fmt,va)
+#define MA_ATTRIBUTE_FORMAT(fmt, va)
 #endif
 
 #ifndef MA_MAX_LOG_CALLBACKS
@@ -4872,6 +4904,7 @@ typedef struct
 {
     ma_gainer_config config;
     ma_uint32 t;
+    float masterVolume;
     float* pOldGains;
     float* pNewGains;
 
@@ -4887,6 +4920,8 @@ MA_API void ma_gainer_uninit(ma_gainer* pGainer, const ma_allocation_callbacks* 
 MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount);
 MA_API ma_result ma_gainer_set_gain(ma_gainer* pGainer, float newGain);
 MA_API ma_result ma_gainer_set_gains(ma_gainer* pGainer, float* pNewGains);
+MA_API ma_result ma_gainer_set_master_volume(ma_gainer* pGainer, float volume);
+MA_API ma_result ma_gainer_get_master_volume(const ma_gainer* pGainer, float* pVolume);
 
 
 
@@ -4948,7 +4983,7 @@ MA_API ma_result ma_fader_init(const ma_fader_config* pConfig, ma_fader* pFader)
 MA_API ma_result ma_fader_process_pcm_frames(ma_fader* pFader, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount);
 MA_API void ma_fader_get_data_format(const ma_fader* pFader, ma_format* pFormat, ma_uint32* pChannels, ma_uint32* pSampleRate);
 MA_API void ma_fader_set_fade(ma_fader* pFader, float volumeBeg, float volumeEnd, ma_uint64 lengthInFrames);
-MA_API float ma_fader_get_current_volume(ma_fader* pFader);
+MA_API float ma_fader_get_current_volume(const ma_fader* pFader);
 
 
 
@@ -5090,6 +5125,8 @@ MA_API ma_result ma_spatializer_init_preallocated(const ma_spatializer_config* p
 MA_API ma_result ma_spatializer_init(const ma_spatializer_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_spatializer* pSpatializer);
 MA_API void ma_spatializer_uninit(ma_spatializer* pSpatializer, const ma_allocation_callbacks* pAllocationCallbacks);
 MA_API ma_result ma_spatializer_process_pcm_frames(ma_spatializer* pSpatializer, ma_spatializer_listener* pListener, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount);
+MA_API ma_result ma_spatializer_set_master_volume(ma_spatializer* pSpatializer, float volume);
+MA_API ma_result ma_spatializer_get_master_volume(const ma_spatializer* pSpatializer, float* pVolume);
 MA_API ma_uint32 ma_spatializer_get_input_channels(const ma_spatializer* pSpatializer);
 MA_API ma_uint32 ma_spatializer_get_output_channels(const ma_spatializer* pSpatializer);
 MA_API void ma_spatializer_set_attenuation_model(ma_spatializer* pSpatializer, ma_attenuation_model attenuationModel);
@@ -6212,7 +6249,7 @@ This section contains the APIs for device playback and capture. Here is where yo
         #define MA_SUPPORT_JACK    /* JACK is technically supported on Windows, but I don't know how many people use it in practice... */
     #endif
 #endif
-#if defined(MA_UNIX)
+#if defined(MA_UNIX) && !defined(MA_ORBIS) && !defined(MA_PROSPERO)
     #if defined(MA_LINUX)
         #if !defined(MA_ANDROID)   /* ALSA is not supported on Android. */
             #define MA_SUPPORT_ALSA
@@ -7347,22 +7384,7 @@ struct ma_context
 #ifdef MA_POSIX
         struct
         {
-            ma_handle pthreadSO;
-            ma_proc pthread_create;
-            ma_proc pthread_join;
-            ma_proc pthread_mutex_init;
-            ma_proc pthread_mutex_destroy;
-            ma_proc pthread_mutex_lock;
-            ma_proc pthread_mutex_unlock;
-            ma_proc pthread_cond_init;
-            ma_proc pthread_cond_destroy;
-            ma_proc pthread_cond_wait;
-            ma_proc pthread_cond_signal;
-            ma_proc pthread_attr_init;
-            ma_proc pthread_attr_destroy;
-            ma_proc pthread_attr_setschedpolicy;
-            ma_proc pthread_attr_getschedparam;
-            ma_proc pthread_attr_setschedparam;
+            int _unused;
         } posix;
 #endif
         int _unused;
@@ -7490,7 +7512,8 @@ struct ma_device
             ma_bool8 isDetachedPlayback;
             ma_bool8 isDetachedCapture;
             ma_wasapi_usage usage;
-            void *hAvrtHandle;
+            void* hAvrtHandle;
+            ma_mutex rerouteLock;
         } wasapi;
 #endif
 #ifdef MA_SUPPORT_DSOUND
@@ -9235,6 +9258,11 @@ Retrieves a friendly name for a backend.
 MA_API const char* ma_get_backend_name(ma_backend backend);
 
 /*
+Retrieves the backend enum from the given name.
+*/
+MA_API ma_result ma_get_backend_from_name(const char* pBackendName, ma_backend* pBackend);
+
+/*
 Determines whether or not the given backend is available by the compilation environment.
 */
 MA_API ma_bool32 ma_is_backend_enabled(ma_backend backend);
@@ -10855,7 +10883,7 @@ typedef struct
     ma_uint32 channelsOut;
     ma_uint32 sampleRate;               /* Only used when the type is set to ma_engine_node_type_sound. */
     ma_mono_expansion_mode monoExpansionMode;
-    ma_bool8 isPitchDisabled;           /* Pitching can be explicitly disable with MA_SOUND_FLAG_NO_PITCH to optimize processing. */
+    ma_bool8 isPitchDisabled;           /* Pitching can be explicitly disabled with MA_SOUND_FLAG_NO_PITCH to optimize processing. */
     ma_bool8 isSpatializationDisabled;  /* Spatialization can be explicitly disabled with MA_SOUND_FLAG_NO_SPATIALIZATION. */
     ma_uint8 pinnedListenerIndex;       /* The index of the listener this node should always use for spatialization. If set to MA_LISTENER_INDEX_CLOSEST the engine will use the closest listener. */
 } ma_engine_node_config;
@@ -11096,7 +11124,7 @@ MA_API void ma_sound_set_directional_attenuation_factor(ma_sound* pSound, float 
 MA_API float ma_sound_get_directional_attenuation_factor(const ma_sound* pSound);
 MA_API void ma_sound_set_fade_in_pcm_frames(ma_sound* pSound, float volumeBeg, float volumeEnd, ma_uint64 fadeLengthInFrames);
 MA_API void ma_sound_set_fade_in_milliseconds(ma_sound* pSound, float volumeBeg, float volumeEnd, ma_uint64 fadeLengthInMilliseconds);
-MA_API float ma_sound_get_current_fade_volume(ma_sound* pSound);
+MA_API float ma_sound_get_current_fade_volume(const ma_sound* pSound);
 MA_API void ma_sound_set_start_time_in_pcm_frames(ma_sound* pSound, ma_uint64 absoluteGlobalTimeInFrames);
 MA_API void ma_sound_set_start_time_in_milliseconds(ma_sound* pSound, ma_uint64 absoluteGlobalTimeInMilliseconds);
 MA_API void ma_sound_set_stop_time_in_pcm_frames(ma_sound* pSound, ma_uint64 absoluteGlobalTimeInFrames);
@@ -11217,6 +11245,10 @@ IMPLEMENTATION
 #include <sched.h>
 #include <sys/time.h>   /* select() (used for ma_sleep()). */
 #include <pthread.h>
+#endif
+
+#ifdef MA_NX
+#include <time.h> /* For nanosleep() */
 #endif
 
 #include <sys/stat.h>   /* For fstat(), etc. */
@@ -11500,23 +11532,6 @@ static MA_INLINE ma_bool32 ma_has_neon(void)
 #endif
 }
 
-#define MA_SIMD_NONE    0
-#define MA_SIMD_SSE2    1
-#define MA_SIMD_AVX2    2
-#define MA_SIMD_NEON    3
-
-#ifndef MA_PREFERRED_SIMD
-    #  if defined(MA_SUPPORT_SSE2) && defined(MA_PREFER_SSE2)
-        #define MA_PREFERRED_SIMD MA_SIMD_SSE2
-    #elif defined(MA_SUPPORT_AVX2) && defined(MA_PREFER_AVX2)
-        #define MA_PREFERRED_SIMD MA_SIMD_AVX2
-    #elif defined(MA_SUPPORT_NEON) && defined(MA_PREFER_NEON)
-        #define MA_PREFERRED_SIMD MA_SIMD_NEON
-    #else
-        #define MA_PREFERRED_SIMD MA_SIMD_NONE
-    #endif
-#endif
-
 #if defined(__has_builtin)
     #define MA_COMPILER_HAS_BUILTIN(x) __has_builtin(x)
 #else
@@ -11630,7 +11645,7 @@ static void ma_sleep__posix(ma_uint32 milliseconds)
     (void)milliseconds;
     MA_ASSERT(MA_FALSE);  /* The Emscripten build should never sleep. */
 #else
-    #if defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 199309L
+    #if (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 199309L) || defined(MA_NX)
         struct timespec ts;
         ts.tv_sec  = milliseconds / 1000;
         ts.tv_nsec = milliseconds % 1000 * 1000000;
@@ -11931,6 +11946,14 @@ MA_API const char* ma_version_string(void)
 Standard Library Stuff
 
 ******************************************************************************/
+#ifndef MA_ASSERT
+#ifdef MA_WIN32
+#define MA_ASSERT(condition) assert(condition)
+#else
+#define MA_ASSERT(condition) assert(condition)
+#endif
+#endif
+
 #ifndef MA_MALLOC
 #ifdef MA_WIN32
 #define MA_MALLOC(sz) HeapAlloc(GetProcessHeap(), 0, (sz))
@@ -11957,6 +11980,11 @@ Standard Library Stuff
 
 static MA_INLINE void ma_zero_memory_default(void* p, size_t sz)
 {
+    if (p == NULL) {
+        MA_ASSERT(sz == 0); /* If this is triggered there's an error with the calling code. */
+        return;
+    }
+
 #ifdef MA_WIN32
     ZeroMemory(p, sz);
 #else
@@ -11983,14 +12011,6 @@ static MA_INLINE void ma_zero_memory_default(void* p, size_t sz)
 #define MA_MOVE_MEMORY(dst, src, sz) MoveMemory((dst), (src), (sz))
 #else
 #define MA_MOVE_MEMORY(dst, src, sz) memmove((dst), (src), (sz))
-#endif
-#endif
-
-#ifndef MA_ASSERT
-#ifdef MA_WIN32
-#define MA_ASSERT(condition) assert(condition)
-#else
-#define MA_ASSERT(condition) assert(condition)
 #endif
 #endif
 
@@ -13797,11 +13817,17 @@ typedef unsigned char           c89atomic_bool;
 #define C89ATOMIC_32BIT
 #endif
 #endif
+#if defined(__arm__) || defined(_M_ARM)
+#define C89ATOMIC_ARM32
+#endif
+#if defined(__arm64) || defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
+#define C89ATOMIC_ARM64
+#endif
 #if defined(__x86_64__) || defined(_M_X64)
 #define C89ATOMIC_X64
 #elif defined(__i386) || defined(_M_IX86)
 #define C89ATOMIC_X86
-#elif defined(__arm__) || defined(_M_ARM) || defined(__arm64) || defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
+#elif defined(C89ATOMIC_ARM32) || defined(C89ATOMIC_ARM64)
 #define C89ATOMIC_ARM
 #endif
 #if defined(_MSC_VER)
@@ -13822,6 +13848,56 @@ typedef unsigned char           c89atomic_bool;
 #define C89ATOMIC_HAS_32
 #define C89ATOMIC_HAS_64
 #if (defined(_MSC_VER) ) || defined(__WATCOMC__) || defined(__DMC__)
+    #define C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, intrin, c89atomicType, msvcType)   \
+        c89atomicType result; \
+        switch (order) \
+        { \
+            case c89atomic_memory_order_relaxed: \
+            { \
+                result = (c89atomicType)intrin##_nf((volatile msvcType*)dst, (msvcType)src); \
+            } break; \
+            case c89atomic_memory_order_consume: \
+            case c89atomic_memory_order_acquire: \
+            { \
+                result = (c89atomicType)intrin##_acq((volatile msvcType*)dst, (msvcType)src); \
+            } break; \
+            case c89atomic_memory_order_release: \
+            { \
+                result = (c89atomicType)intrin##_rel((volatile msvcType*)dst, (msvcType)src); \
+            } break; \
+            case c89atomic_memory_order_acq_rel: \
+            case c89atomic_memory_order_seq_cst: \
+            default: \
+            { \
+                result = (c89atomicType)intrin((volatile msvcType*)dst, (msvcType)src); \
+            } break; \
+        } \
+        return result;
+    #define C89ATOMIC_MSVC_ARM_INTRINSIC_COMPARE_EXCHANGE(ptr, expected, desired, order, intrin, c89atomicType, msvcType)   \
+        c89atomicType result; \
+        switch (order) \
+        { \
+            case c89atomic_memory_order_relaxed: \
+            { \
+                result = (c89atomicType)intrin##_nf((volatile msvcType*)ptr, (msvcType)expected, (msvcType)desired); \
+            } break; \
+            case c89atomic_memory_order_consume: \
+            case c89atomic_memory_order_acquire: \
+            { \
+                result = (c89atomicType)intrin##_acq((volatile msvcType*)ptr, (msvcType)expected, (msvcType)desired); \
+            } break; \
+            case c89atomic_memory_order_release: \
+            { \
+                result = (c89atomicType)intrin##_rel((volatile msvcType*)ptr, (msvcType)expected, (msvcType)desired); \
+            } break; \
+            case c89atomic_memory_order_acq_rel: \
+            case c89atomic_memory_order_seq_cst: \
+            default: \
+            { \
+                result = (c89atomicType)intrin((volatile msvcType*)ptr, (msvcType)expected, (msvcType)desired); \
+            } break; \
+        } \
+        return result;
     #define c89atomic_memory_order_relaxed  0
     #define c89atomic_memory_order_consume  1
     #define c89atomic_memory_order_acquire  2
@@ -13960,29 +14036,45 @@ typedef unsigned char           c89atomic_bool;
         #if defined(C89ATOMIC_HAS_8)
             static C89ATOMIC_INLINE c89atomic_uint8 __stdcall c89atomic_exchange_explicit_8(volatile c89atomic_uint8* dst, c89atomic_uint8 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchange8, c89atomic_uint8, char);
+            #else
                 (void)order;
                 return (c89atomic_uint8)_InterlockedExchange8((volatile char*)dst, (char)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_16)
             static C89ATOMIC_INLINE c89atomic_uint16 __stdcall c89atomic_exchange_explicit_16(volatile c89atomic_uint16* dst, c89atomic_uint16 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchange16, c89atomic_uint16, short);
+            #else
                 (void)order;
                 return (c89atomic_uint16)_InterlockedExchange16((volatile short*)dst, (short)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_32)
             static C89ATOMIC_INLINE c89atomic_uint32 __stdcall c89atomic_exchange_explicit_32(volatile c89atomic_uint32* dst, c89atomic_uint32 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchange, c89atomic_uint32, long);
+            #else
                 (void)order;
                 return (c89atomic_uint32)_InterlockedExchange((volatile long*)dst, (long)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_64) && defined(C89ATOMIC_64BIT)
             static C89ATOMIC_INLINE c89atomic_uint64 __stdcall c89atomic_exchange_explicit_64(volatile c89atomic_uint64* dst, c89atomic_uint64 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchange64, c89atomic_uint64, long long);
+            #else
                 (void)order;
                 return (c89atomic_uint64)_InterlockedExchange64((volatile long long*)dst, (long long)src);
+            #endif
             }
         #else
         #endif
@@ -14045,29 +14137,45 @@ typedef unsigned char           c89atomic_bool;
         #if defined(C89ATOMIC_HAS_8)
             static C89ATOMIC_INLINE c89atomic_uint8 __stdcall c89atomic_fetch_add_explicit_8(volatile c89atomic_uint8* dst, c89atomic_uint8 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchangeAdd8, c89atomic_uint8, char);
+            #else
                 (void)order;
                 return (c89atomic_uint8)_InterlockedExchangeAdd8((volatile char*)dst, (char)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_16)
             static C89ATOMIC_INLINE c89atomic_uint16 __stdcall c89atomic_fetch_add_explicit_16(volatile c89atomic_uint16* dst, c89atomic_uint16 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchangeAdd16, c89atomic_uint16, short);
+            #else
                 (void)order;
                 return (c89atomic_uint16)_InterlockedExchangeAdd16((volatile short*)dst, (short)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_32)
             static C89ATOMIC_INLINE c89atomic_uint32 __stdcall c89atomic_fetch_add_explicit_32(volatile c89atomic_uint32* dst, c89atomic_uint32 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchangeAdd, c89atomic_uint32, long);
+            #else
                 (void)order;
                 return (c89atomic_uint32)_InterlockedExchangeAdd((volatile long*)dst, (long)src);
+            #endif
             }
         #endif
         #if defined(C89ATOMIC_HAS_64) && defined(C89ATOMIC_64BIT)
             static C89ATOMIC_INLINE c89atomic_uint64 __stdcall c89atomic_fetch_add_explicit_64(volatile c89atomic_uint64* dst, c89atomic_uint64 src, c89atomic_memory_order order)
             {
+            #if defined(C89ATOMIC_ARM)
+                C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedExchangeAdd64, c89atomic_uint64, long long);
+            #else
                 (void)order;
                 return (c89atomic_uint64)_InterlockedExchangeAdd64((volatile long long*)dst, (long long)src);
+            #endif
             }
         #else
         #endif
@@ -14096,6 +14204,8 @@ typedef unsigned char           c89atomic_bool;
     #else
         #if defined(C89ATOMIC_X64)
             #define c89atomic_thread_fence(order)   __faststorefence(), (void)order
+        #elif defined(C89ATOMIC_ARM64)
+            #define c89atomic_thread_fence(order)   __dmb(_ARM64_BARRIER_ISH), (void)order
         #else
             static C89ATOMIC_INLINE void c89atomic_thread_fence(c89atomic_memory_order order)
             {
@@ -14109,29 +14219,45 @@ typedef unsigned char           c89atomic_bool;
     #if defined(C89ATOMIC_HAS_8)
         static C89ATOMIC_INLINE c89atomic_uint8 c89atomic_load_explicit_8(volatile const c89atomic_uint8* ptr, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC_COMPARE_EXCHANGE(ptr, 0, 0, order, _InterlockedCompareExchange8, c89atomic_uint8, char);
+        #else
             (void)order;
             return c89atomic_compare_and_swap_8((volatile c89atomic_uint8*)ptr, 0, 0);
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_16)
         static C89ATOMIC_INLINE c89atomic_uint16 c89atomic_load_explicit_16(volatile const c89atomic_uint16* ptr, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC_COMPARE_EXCHANGE(ptr, 0, 0, order, _InterlockedCompareExchange16, c89atomic_uint16, short);
+        #else
             (void)order;
             return c89atomic_compare_and_swap_16((volatile c89atomic_uint16*)ptr, 0, 0);
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_32)
         static C89ATOMIC_INLINE c89atomic_uint32 c89atomic_load_explicit_32(volatile const c89atomic_uint32* ptr, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC_COMPARE_EXCHANGE(ptr, 0, 0, order, _InterlockedCompareExchange, c89atomic_uint32, long);
+        #else
             (void)order;
             return c89atomic_compare_and_swap_32((volatile c89atomic_uint32*)ptr, 0, 0);
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_64)
         static C89ATOMIC_INLINE c89atomic_uint64 c89atomic_load_explicit_64(volatile const c89atomic_uint64* ptr, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC_COMPARE_EXCHANGE(ptr, 0, 0, order, _InterlockedCompareExchange64, c89atomic_uint64, long long);
+        #else
             (void)order;
             return c89atomic_compare_and_swap_64((volatile c89atomic_uint64*)ptr, 0, 0);
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_8)
@@ -14201,6 +14327,9 @@ typedef unsigned char           c89atomic_bool;
     #if defined(C89ATOMIC_HAS_8)
         static C89ATOMIC_INLINE c89atomic_uint8 __stdcall c89atomic_fetch_and_explicit_8(volatile c89atomic_uint8* dst, c89atomic_uint8 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedAnd8, c89atomic_uint8, char);
+        #else
             c89atomic_uint8 oldValue;
             c89atomic_uint8 newValue;
             do {
@@ -14209,11 +14338,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_8(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_16)
         static C89ATOMIC_INLINE c89atomic_uint16 __stdcall c89atomic_fetch_and_explicit_16(volatile c89atomic_uint16* dst, c89atomic_uint16 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedAnd16, c89atomic_uint16, short);
+        #else
             c89atomic_uint16 oldValue;
             c89atomic_uint16 newValue;
             do {
@@ -14222,11 +14355,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_16(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_32)
         static C89ATOMIC_INLINE c89atomic_uint32 __stdcall c89atomic_fetch_and_explicit_32(volatile c89atomic_uint32* dst, c89atomic_uint32 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedAnd, c89atomic_uint32, long);
+        #else
             c89atomic_uint32 oldValue;
             c89atomic_uint32 newValue;
             do {
@@ -14235,11 +14372,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_32(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_64)
         static C89ATOMIC_INLINE c89atomic_uint64 __stdcall c89atomic_fetch_and_explicit_64(volatile c89atomic_uint64* dst, c89atomic_uint64 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedAnd64, c89atomic_uint64, long long);
+        #else
             c89atomic_uint64 oldValue;
             c89atomic_uint64 newValue;
             do {
@@ -14248,11 +14389,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_64(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_8)
         static C89ATOMIC_INLINE c89atomic_uint8 __stdcall c89atomic_fetch_xor_explicit_8(volatile c89atomic_uint8* dst, c89atomic_uint8 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedXor8, c89atomic_uint8, char);
+        #else
             c89atomic_uint8 oldValue;
             c89atomic_uint8 newValue;
             do {
@@ -14261,11 +14406,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_8(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_16)
         static C89ATOMIC_INLINE c89atomic_uint16 __stdcall c89atomic_fetch_xor_explicit_16(volatile c89atomic_uint16* dst, c89atomic_uint16 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedXor16, c89atomic_uint16, short);
+        #else
             c89atomic_uint16 oldValue;
             c89atomic_uint16 newValue;
             do {
@@ -14274,11 +14423,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_16(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_32)
         static C89ATOMIC_INLINE c89atomic_uint32 __stdcall c89atomic_fetch_xor_explicit_32(volatile c89atomic_uint32* dst, c89atomic_uint32 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedXor, c89atomic_uint32, long);
+        #else
             c89atomic_uint32 oldValue;
             c89atomic_uint32 newValue;
             do {
@@ -14287,11 +14440,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_32(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_64)
         static C89ATOMIC_INLINE c89atomic_uint64 __stdcall c89atomic_fetch_xor_explicit_64(volatile c89atomic_uint64* dst, c89atomic_uint64 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedXor64, c89atomic_uint64, long long);
+        #else
             c89atomic_uint64 oldValue;
             c89atomic_uint64 newValue;
             do {
@@ -14300,11 +14457,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_64(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_8)
         static C89ATOMIC_INLINE c89atomic_uint8 __stdcall c89atomic_fetch_or_explicit_8(volatile c89atomic_uint8* dst, c89atomic_uint8 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedOr8, c89atomic_uint8, char);
+        #else
             c89atomic_uint8 oldValue;
             c89atomic_uint8 newValue;
             do {
@@ -14313,11 +14474,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_8(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_16)
         static C89ATOMIC_INLINE c89atomic_uint16 __stdcall c89atomic_fetch_or_explicit_16(volatile c89atomic_uint16* dst, c89atomic_uint16 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedOr16, c89atomic_uint16, short);
+        #else
             c89atomic_uint16 oldValue;
             c89atomic_uint16 newValue;
             do {
@@ -14326,11 +14491,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_16(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_32)
         static C89ATOMIC_INLINE c89atomic_uint32 __stdcall c89atomic_fetch_or_explicit_32(volatile c89atomic_uint32* dst, c89atomic_uint32 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedOr, c89atomic_uint32, long);
+        #else
             c89atomic_uint32 oldValue;
             c89atomic_uint32 newValue;
             do {
@@ -14339,11 +14508,15 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_32(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_64)
         static C89ATOMIC_INLINE c89atomic_uint64 __stdcall c89atomic_fetch_or_explicit_64(volatile c89atomic_uint64* dst, c89atomic_uint64 src, c89atomic_memory_order order)
         {
+        #if defined(C89ATOMIC_ARM)
+            C89ATOMIC_MSVC_ARM_INTRINSIC(dst, src, order, _InterlockedOr64, c89atomic_uint64, long long);
+        #else
             c89atomic_uint64 oldValue;
             c89atomic_uint64 newValue;
             do {
@@ -14352,6 +14525,7 @@ typedef unsigned char           c89atomic_bool;
             } while (c89atomic_compare_and_swap_64(dst, oldValue, newValue) != oldValue);
             (void)order;
             return oldValue;
+        #endif
         }
     #endif
     #if defined(C89ATOMIC_HAS_8)
@@ -15480,7 +15654,7 @@ static C89ATOMIC_INLINE float c89atomic_compare_and_swap_f32(volatile float* dst
     c89atomic_if32 e, d;
     e.f = expected;
     d.f = desired;
-    r.i = c89atomic_compare_and_swap_32((volatile c89atomic_uint32*)dst, e.i, e.i);
+    r.i = c89atomic_compare_and_swap_32((volatile c89atomic_uint32*)dst, e.i, d.i);
     return r.f;
 }
 static C89ATOMIC_INLINE double c89atomic_compare_and_swap_f64(volatile double* dst, double expected, double desired)
@@ -15489,7 +15663,7 @@ static C89ATOMIC_INLINE double c89atomic_compare_and_swap_f64(volatile double* d
     c89atomic_if64 e, d;
     e.f = expected;
     d.f = desired;
-    r.i = c89atomic_compare_and_swap_64((volatile c89atomic_uint64*)dst, e.i, e.i);
+    r.i = c89atomic_compare_and_swap_64((volatile c89atomic_uint64*)dst, e.i, d.i);
     return r.f;
 }
 typedef c89atomic_flag c89atomic_spinlock;
@@ -15851,6 +16025,10 @@ static ma_result ma_thread_create__posix(ma_thread* pThread, ma_thread_priority 
     pthread_attr_t attr;
     if (pthread_attr_init(&attr) == 0) {
         int scheduler = -1;
+
+        /* We successfully initialized our attributes object so we can assign the pointer so it's passed into pthread_create(). */
+        pAttr = &attr;
+
         if (priority == ma_thread_priority_idle) {
 #ifdef SCHED_IDLE
             if (pthread_attr_setschedpolicy(&attr, SCHED_IDLE) == 0) {
@@ -15894,9 +16072,8 @@ static ma_result ma_thread_create__posix(ma_thread* pThread, ma_thread_priority 
                     }
                 }
 
-                if (pthread_attr_setschedparam(&attr, &sched) == 0) {
-                    pAttr = &attr;
-                }
+                /* I'm not treating a failure of setting the priority as a critical error so not checking the return value here. */
+                pthread_attr_setschedparam(&attr, &sched);
             }
         }
     }
@@ -17411,6 +17588,14 @@ DEVICE I/O
 
 *************************************************************************************************************************************************************
 ************************************************************************************************************************************************************/
+
+/* Disable run-time linking on certain backends and platforms. */
+#ifndef MA_NO_RUNTIME_LINKING
+    #if defined(MA_EMSCRIPTEN) || defined(MA_ORBIS) || defined(MA_PROSPERO)
+        #define MA_NO_RUNTIME_LINKING
+    #endif
+#endif
+
 #ifndef MA_NO_DEVICE_IO
 #ifdef MA_WIN32
     #include <objbase.h>
@@ -17429,24 +17614,13 @@ DEVICE I/O
 #ifdef MA_POSIX
     #include <sys/types.h>
     #include <unistd.h>
-    #include <dlfcn.h>
-#endif
 
-/*
-Unfortunately using runtime linking for pthreads causes problems. This has occurred for me when testing on FreeBSD. When
-using runtime linking, deadlocks can occur (for me it happens when loading data from fread()). It turns out that doing
-compile-time linking fixes this. I'm not sure why this happens, but the safest way I can think of to fix this is to simply
-disable runtime linking by default. To enable runtime linking, #define this before the implementation of this file. I am
-not officially supporting this, but I'm leaving it here in case it's useful for somebody, somewhere.
-*/
-/*#define MA_USE_RUNTIME_LINKING_FOR_PTHREAD*/
-
-/* Disable run-time linking on certain backends. */
-#ifndef MA_NO_RUNTIME_LINKING
-    #if defined(MA_EMSCRIPTEN)
-        #define MA_NO_RUNTIME_LINKING
+    /* No need for dlfcn.h if we're not using runtime linking. */
+    #ifndef MA_NO_RUNTIME_LINKING
+        #include <dlfcn.h>
     #endif
 #endif
+
 
 
 MA_API void ma_device_info_add_native_data_format(ma_device_info* pDeviceInfo, ma_format format, ma_uint32 channels, ma_uint32 sampleRate, ma_uint32 flags)
@@ -17465,27 +17639,60 @@ MA_API void ma_device_info_add_native_data_format(ma_device_info* pDeviceInfo, m
 }
 
 
+typedef struct
+{
+    ma_backend backend;
+    const char* pName;
+} ma_backend_info;
+
+static ma_backend_info gBackendInfo[] = /* Indexed by the backend enum. Must be in the order backends are declared in the ma_backend enum. */
+{
+    {ma_backend_wasapi,     "WASAPI"},
+    {ma_backend_dsound,     "DirectSound"},
+    {ma_backend_winmm,      "WinMM"},
+    {ma_backend_coreaudio,  "Core Audio"},
+    {ma_backend_sndio,      "sndio"},
+    {ma_backend_audio4,     "audio(4)"},
+    {ma_backend_oss,        "OSS"},
+    {ma_backend_pulseaudio, "PulseAudio"},
+    {ma_backend_alsa,       "ALSA"},
+    {ma_backend_jack,       "JACK"},
+    {ma_backend_aaudio,     "AAudio"},
+    {ma_backend_opensl,     "OpenSL|ES"},
+    {ma_backend_webaudio,   "Web Audio"},
+    {ma_backend_custom,     "Custom"},
+    {ma_backend_null,       "Null"}
+};
+
 MA_API const char* ma_get_backend_name(ma_backend backend)
 {
-    switch (backend)
-    {
-        case ma_backend_wasapi:     return "WASAPI";
-        case ma_backend_dsound:     return "DirectSound";
-        case ma_backend_winmm:      return "WinMM";
-        case ma_backend_coreaudio:  return "Core Audio";
-        case ma_backend_sndio:      return "sndio";
-        case ma_backend_audio4:     return "audio(4)";
-        case ma_backend_oss:        return "OSS";
-        case ma_backend_pulseaudio: return "PulseAudio";
-        case ma_backend_alsa:       return "ALSA";
-        case ma_backend_jack:       return "JACK";
-        case ma_backend_aaudio:     return "AAudio";
-        case ma_backend_opensl:     return "OpenSL|ES";
-        case ma_backend_webaudio:   return "Web Audio";
-        case ma_backend_custom:     return "Custom";
-        case ma_backend_null:       return "Null";
-        default:                    return "Unknown";
+    if (backend < 0 || backend >= (int)ma_countof(gBackendInfo)) {
+        return "Unknown";
     }
+
+    return gBackendInfo[backend].pName;
+}
+
+MA_API ma_result ma_get_backend_from_name(const char* pBackendName, ma_backend* pBackend)
+{
+    size_t iBackend;
+
+    if (pBackendName == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    for (iBackend = 0; iBackend < ma_countof(gBackendInfo); iBackend += 1) {
+        if (ma_strcmp(pBackendName, gBackendInfo[iBackend].pName) == 0) {
+            if (pBackend != NULL) {
+                *pBackend = gBackendInfo[iBackend].backend;
+            }
+
+            return MA_SUCCESS;
+        }
+    }
+
+    /* Getting here means the backend name is unknown. */
+    return MA_INVALID_ARGS;
 }
 
 MA_API ma_bool32 ma_is_backend_enabled(ma_backend backend)
@@ -17983,6 +18190,7 @@ Dynamic Linking
 *******************************************************************************/
 MA_API ma_handle ma_dlopen(ma_context* pContext, const char* filename)
 {
+#ifndef MA_NO_RUNTIME_LINKING
     ma_handle handle;
 
     ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "Loading library: %s\n", filename);
@@ -18014,10 +18222,17 @@ MA_API ma_handle ma_dlopen(ma_context* pContext, const char* filename)
 
     (void)pContext; /* It's possible for pContext to be unused. */
     return handle;
+#else
+    /* Runtime linking is disabled. */
+    (void)pContext;
+    (void)filename;
+    return NULL;
+#endif
 }
 
 MA_API void ma_dlclose(ma_context* pContext, ma_handle handle)
 {
+#ifndef MA_NO_RUNTIME_LINKING
 #ifdef _WIN32
     FreeLibrary((HMODULE)handle);
 #else
@@ -18025,10 +18240,16 @@ MA_API void ma_dlclose(ma_context* pContext, ma_handle handle)
 #endif
 
     (void)pContext;
+#else
+    /* Runtime linking is disabled. */
+    (void)pContext;
+    (void)handle;
+#endif
 }
 
 MA_API ma_proc ma_dlsym(ma_context* pContext, ma_handle handle, const char* symbol)
 {
+#ifndef MA_NO_RUNTIME_LINKING
     ma_proc proc;
 
     ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "Loading symbol: %s\n", symbol);
@@ -18052,6 +18273,13 @@ MA_API ma_proc ma_dlsym(ma_context* pContext, ma_handle handle, const char* symb
 
     (void)pContext; /* It's possible for pContext to be unused. */
     return proc;
+#else
+    /* Runtime linking is disabled. */
+    (void)pContext;
+    (void)handle;
+    (void)symbol;
+    return NULL;
+#endif
 }
 
 
@@ -18256,7 +18484,7 @@ static void ma_device__on_data(ma_device* pDevice, void* pFramesOut, const void*
                         /* The intermediary buffer has just been filled. */
                         pDevice->playback.intermediaryBufferLen = pDevice->playback.intermediaryBufferCap;
                     }
-                }   
+                }
             }
 
             /* If we're in duplex mode we might need to do a refill of the data. */
@@ -20396,7 +20624,6 @@ static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnDefaultDeviceChanged
 
 
 
-
     /*
     Second attempt at device rerouting. We're going to retrieve the device's state at the time of
     the route change. We're then going to stop the device, reinitialize the device, and then start
@@ -20406,37 +20633,49 @@ static HRESULT STDMETHODCALLTYPE ma_IMMNotificationClient_OnDefaultDeviceChanged
         ma_uint32 previousState = ma_device_get_state(pThis->pDevice);
         ma_bool8 restartDevice = MA_FALSE;
 
+        if (previousState == ma_device_state_uninitialized || previousState == ma_device_state_starting) {
+            ma_log_postf(ma_device_get_log(pThis->pDevice), MA_LOG_LEVEL_DEBUG, "[WASAPI] Stream rerouting abandoned because the device is in the process of starting.\n");
+            return S_OK;
+        }
+
         if (previousState == ma_device_state_started) {
             ma_device_stop(pThis->pDevice);
             restartDevice = MA_TRUE;
         }
 
         if (pDefaultDeviceID != NULL) { /* <-- The input device ID will be null if there's no other device available. */
-            if (dataFlow == ma_eRender) {
-                ma_device_reroute__wasapi(pThis->pDevice, ma_device_type_playback);
+            ma_mutex_lock(&pThis->pDevice->wasapi.rerouteLock);
+            {
+                if (dataFlow == ma_eRender) {
+                    ma_device_reroute__wasapi(pThis->pDevice, ma_device_type_playback);
 
-                if (pThis->pDevice->wasapi.isDetachedPlayback) {
-                    pThis->pDevice->wasapi.isDetachedPlayback = MA_FALSE;
+                    if (pThis->pDevice->wasapi.isDetachedPlayback) {
+                        pThis->pDevice->wasapi.isDetachedPlayback = MA_FALSE;
 
-                    if (pThis->pDevice->type == ma_device_type_duplex && pThis->pDevice->wasapi.isDetachedCapture) {
-                        restartDevice = MA_FALSE;   /* It's a duplex device and the capture side is detached. We cannot be restarting the device just yet. */
-                    } else {
-                        restartDevice = MA_TRUE;    /* It's not a duplex device, or the capture side is also attached so we can go ahead and restart the device. */
+                        if (pThis->pDevice->type == ma_device_type_duplex && pThis->pDevice->wasapi.isDetachedCapture) {
+                            restartDevice = MA_FALSE;   /* It's a duplex device and the capture side is detached. We cannot be restarting the device just yet. */
+                        }
+                        else {
+                            restartDevice = MA_TRUE;    /* It's not a duplex device, or the capture side is also attached so we can go ahead and restart the device. */
+                        }
                     }
                 }
-            } else {
-                ma_device_reroute__wasapi(pThis->pDevice, (pThis->pDevice->type == ma_device_type_loopback) ? ma_device_type_loopback : ma_device_type_capture);
+                else {
+                    ma_device_reroute__wasapi(pThis->pDevice, (pThis->pDevice->type == ma_device_type_loopback) ? ma_device_type_loopback : ma_device_type_capture);
 
-                if (pThis->pDevice->wasapi.isDetachedCapture) {
-                    pThis->pDevice->wasapi.isDetachedCapture = MA_FALSE;
+                    if (pThis->pDevice->wasapi.isDetachedCapture) {
+                        pThis->pDevice->wasapi.isDetachedCapture = MA_FALSE;
 
-                    if (pThis->pDevice->type == ma_device_type_duplex && pThis->pDevice->wasapi.isDetachedPlayback) {
-                        restartDevice = MA_FALSE;   /* It's a duplex device and the playback side is detached. We cannot be restarting the device just yet. */
-                    } else {
-                        restartDevice = MA_TRUE;    /* It's not a duplex device, or the playback side is also attached so we can go ahead and restart the device. */
+                        if (pThis->pDevice->type == ma_device_type_duplex && pThis->pDevice->wasapi.isDetachedPlayback) {
+                            restartDevice = MA_FALSE;   /* It's a duplex device and the playback side is detached. We cannot be restarting the device just yet. */
+                        }
+                        else {
+                            restartDevice = MA_TRUE;    /* It's not a duplex device, or the playback side is also attached so we can go ahead and restart the device. */
+                        }
                     }
                 }
             }
+            ma_mutex_unlock(&pThis->pDevice->wasapi.rerouteLock);
 
             if (restartDevice) {
                 ma_device_start(pThis->pDevice);
@@ -22218,6 +22457,8 @@ static ma_result ma_device_init__wasapi(ma_device* pDevice, const ma_device_conf
         }
     }
 
+    ma_mutex_init(&pDevice->wasapi.rerouteLock);
+
     hr = ma_CoCreateInstance(pDevice->pContext, MA_CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, MA_IID_IMMDeviceEnumerator, (void**)&pDeviceEnumerator);
     if (FAILED(hr)) {
         ma_device_uninit__wasapi(pDevice);
@@ -22317,17 +22558,16 @@ static ma_result ma_device_reroute__wasapi(ma_device* pDevice, ma_device_type de
     }
 
     ma_device__post_init_setup(pDevice, deviceType);
-
     ma_device__on_notification_rerouted(pDevice);
+
+    ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "=== DEVICE CHANGED ===\n");
 
     return MA_SUCCESS;
 }
 
-static ma_result ma_device_start__wasapi(ma_device* pDevice)
+static ma_result ma_device_start__wasapi_nolock(ma_device* pDevice)
 {
     HRESULT hr;
-
-    MA_ASSERT(pDevice != NULL);
 
     if (pDevice->pContext->wasapi.hAvrt) {
         LPCWSTR pTaskName = ma_to_usage_string__wasapi(pDevice->wasapi.usage);
@@ -22360,7 +22600,23 @@ static ma_result ma_device_start__wasapi(ma_device* pDevice)
     return MA_SUCCESS;
 }
 
-static ma_result ma_device_stop__wasapi(ma_device* pDevice)
+static ma_result ma_device_start__wasapi(ma_device* pDevice)
+{
+    ma_result result;
+
+    MA_ASSERT(pDevice != NULL);
+
+    /* Wait for any rerouting to finish before attempting to start the device. */
+    ma_mutex_lock(&pDevice->wasapi.rerouteLock);
+    {
+        result = ma_device_start__wasapi_nolock(pDevice);
+    }
+    ma_mutex_unlock(&pDevice->wasapi.rerouteLock);
+
+    return result;
+}
+
+static ma_result ma_device_stop__wasapi_nolock(ma_device* pDevice)
 {
     ma_result result;
     HRESULT hr;
@@ -22389,7 +22645,7 @@ static ma_result ma_device_stop__wasapi(ma_device* pDevice)
         /* If we have a mapped buffer we need to release it. */
         if (pDevice->wasapi.pMappedBufferCapture != NULL) {
             ma_IAudioCaptureClient_ReleaseBuffer((ma_IAudioCaptureClient*)pDevice->wasapi.pCaptureClient, pDevice->wasapi.mappedBufferCaptureCap);
-            pDevice->wasapi.pMappedBufferCapture   = NULL;
+            pDevice->wasapi.pMappedBufferCapture = NULL;
             pDevice->wasapi.mappedBufferCaptureCap = 0;
             pDevice->wasapi.mappedBufferCaptureLen = 0;
         }
@@ -22408,7 +22664,8 @@ static ma_result ma_device_stop__wasapi(ma_device* pDevice)
 
             if (pDevice->playback.shareMode == ma_share_mode_exclusive) {
                 WaitForSingleObject(pDevice->wasapi.hEventPlayback, waitTime);
-            } else {
+            }
+            else {
                 ma_uint32 prevFramesAvaialablePlayback = (ma_uint32)-1;
                 ma_uint32 framesAvailablePlayback;
                 for (;;) {
@@ -22451,7 +22708,7 @@ static ma_result ma_device_stop__wasapi(ma_device* pDevice)
 
         if (pDevice->wasapi.pMappedBufferPlayback != NULL) {
             ma_IAudioRenderClient_ReleaseBuffer((ma_IAudioRenderClient*)pDevice->wasapi.pRenderClient, pDevice->wasapi.mappedBufferPlaybackCap, 0);
-            pDevice->wasapi.pMappedBufferPlayback   = NULL;
+            pDevice->wasapi.pMappedBufferPlayback = NULL;
             pDevice->wasapi.mappedBufferPlaybackCap = 0;
             pDevice->wasapi.mappedBufferPlaybackLen = 0;
         }
@@ -22460,6 +22717,22 @@ static ma_result ma_device_stop__wasapi(ma_device* pDevice)
     }
 
     return MA_SUCCESS;
+}
+
+static ma_result ma_device_stop__wasapi(ma_device* pDevice)
+{
+    ma_result result;
+
+    MA_ASSERT(pDevice != NULL);
+
+    /* Wait for any rerouting to finish before attempting to stop the device. */
+    ma_mutex_lock(&pDevice->wasapi.rerouteLock);
+    {
+        result = ma_device_stop__wasapi_nolock(pDevice);
+    }
+    ma_mutex_unlock(&pDevice->wasapi.rerouteLock);
+
+    return result;
 }
 
 
@@ -22568,7 +22841,7 @@ static ma_result ma_device_read__wasapi(ma_device* pDevice, void* pFrames, ma_ui
                         for (i = 0; i < iterationCount; i += 1) {
                             hr = ma_IAudioCaptureClient_ReleaseBuffer((ma_IAudioCaptureClient*)pDevice->wasapi.pCaptureClient, pDevice->wasapi.mappedBufferCaptureCap);
                             if (FAILED(hr)) {
-                                ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "[WASAPI] Data discontinuity recovery: IAudioCaptureClient_ReleaseBuffer() failed with %d.\n", hr);
+                                ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "[WASAPI] Data discontinuity recovery: IAudioCaptureClient_ReleaseBuffer() failed with %ld.\n", hr);
                                 break;
                             }
 
@@ -22593,7 +22866,7 @@ static ma_result ma_device_read__wasapi(ma_device* pDevice, void* pFrames, ma_ui
                                 }
 
                                 if (FAILED(hr)) {
-                                    ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "[WASAPI] Data discontinuity recovery: IAudioCaptureClient_GetBuffer() failed with %d.\n", hr);
+                                    ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "[WASAPI] Data discontinuity recovery: IAudioCaptureClient_GetBuffer() failed with %ld.\n", hr);
                                 }
 
                                 break;
@@ -29577,7 +29850,7 @@ static ma_result ma_device_init__pulse(ma_device* pDevice, const ma_device_confi
         sampleRate = pDescriptorCapture->sampleRate;
     }
 
-    
+
 
     result = ma_init_pa_mainloop_and_pa_context__pulse(pDevice->pContext, pDevice->pContext->pulse.pApplicationName, pDevice->pContext->pulse.pServerName, MA_FALSE, &pDevice->pulse.pMainLoop, &pDevice->pulse.pPulseContext);
     if (result != MA_SUCCESS) {
@@ -31369,15 +31642,15 @@ static ma_result ma_get_channel_map_from_AudioChannelLayout(AudioChannelLayout* 
             {
                 pChannelMap[7] = MA_CHANNEL_SIDE_RIGHT;
                 pChannelMap[6] = MA_CHANNEL_SIDE_LEFT;
-            } /* Intentional fallthrough. */
+            } MA_FALLTHROUGH; /* Intentional fallthrough. */
             case kAudioChannelLayoutTag_Hexagonal:
             {
                 pChannelMap[5] = MA_CHANNEL_BACK_CENTER;
-            } /* Intentional fallthrough. */
+            } MA_FALLTHROUGH; /* Intentional fallthrough. */
             case kAudioChannelLayoutTag_Pentagonal:
             {
                 pChannelMap[4] = MA_CHANNEL_FRONT_CENTER;
-            } /* Intentional fallghrough. */
+            } MA_FALLTHROUGH; /* Intentional fallthrough. */
             case kAudioChannelLayoutTag_Quadraphonic:
             {
                 pChannelMap[3] = MA_CHANNEL_BACK_RIGHT;
@@ -32715,7 +32988,7 @@ static OSStatus ma_on_input__coreaudio(void* pUserData, AudioUnitRenderActionFla
         ma_log_postf(ma_device_get_log(pDevice), MA_LOG_LEVEL_DEBUG, "Failed to allocate AudioBufferList for capture.\n");
         return noErr;
     }
-    
+
     pRenderedBufferList = (AudioBufferList*)pDevice->coreaudio.pAudioBufferList;
     MA_ASSERT(pRenderedBufferList);
 
@@ -33153,7 +33426,7 @@ static ma_result ma_device__untrack__coreaudio(ma_device* pDevice)
             */
             ma_device__on_notification_interruption_began(m_pDevice);
         } break;
-        
+
         case AVAudioSessionInterruptionTypeEnded:
         {
             ma_log_postf(ma_device_get_log(m_pDevice), MA_LOG_LEVEL_INFO, "[Core Audio] Interruption: AVAudioSessionInterruptionTypeEnded\n");
@@ -33207,7 +33480,7 @@ static ma_result ma_device__untrack__coreaudio(ma_device* pDevice)
     }
 
     ma_log_postf(ma_device_get_log(m_pDevice), MA_LOG_LEVEL_DEBUG, "[Core Audio] Changing Route. inputNumberChannels=%d; outputNumberOfChannels=%d\n", (int)pSession.inputNumberOfChannels, (int)pSession.outputNumberOfChannels);
-    
+
     /* Let the application know about the route change. */
     ma_device__on_notification_rerouted(m_pDevice);
 }
@@ -33580,7 +33853,7 @@ static ma_result ma_device_init_internal__coreaudio(ma_context* pContext, ma_dev
     @autoreleasepool {
         AVAudioSession* pAudioSession = [AVAudioSession sharedInstance];
         MA_ASSERT(pAudioSession != NULL);
-        
+
         [pAudioSession setPreferredIOBufferDuration:((float)actualPeriodSizeInFrames / pAudioSession.sampleRate) error:nil];
         actualPeriodSizeInFrames = ma_next_power_of_2((ma_uint32)(pAudioSession.IOBufferDuration * pAudioSession.sampleRate));
     }
@@ -33821,7 +34094,7 @@ static ma_result ma_device_init__coreaudio(ma_device* pDevice, const ma_device_c
 
     #if defined(MA_APPLE_DESKTOP)
         ma_get_AudioObject_uid(pDevice->pContext, pDevice->coreaudio.deviceObjectIDCapture, sizeof(pDevice->capture.id.coreaudio), pDevice->capture.id.coreaudio);
-    
+
         /*
         If we are using the default device we'll need to listen for changes to the system's default device so we can seemlessly
         switch the device in the background.
@@ -33885,7 +34158,7 @@ static ma_result ma_device_init__coreaudio(ma_device* pDevice, const ma_device_c
 
     #if defined(MA_APPLE_DESKTOP)
         ma_get_AudioObject_uid(pDevice->pContext, pDevice->coreaudio.deviceObjectIDPlayback, sizeof(pDevice->playback.id.coreaudio), pDevice->playback.id.coreaudio);
-    
+
         /*
         If we are using the default device we'll need to listen for changes to the system's default device so we can seemlessly
         switch the device in the background.
@@ -37473,7 +37746,7 @@ static ma_result ma_context_init__aaudio(ma_context* pContext, const ma_context_
             return result;
         }
     }
-    
+
 
     (void)pConfig;
     return MA_SUCCESS;
@@ -39870,71 +40143,14 @@ static ma_result ma_context_init_backend_apis__win32(ma_context* pContext)
 #else
 static ma_result ma_context_uninit_backend_apis__nix(ma_context* pContext)
 {
-#if defined(MA_USE_RUNTIME_LINKING_FOR_PTHREAD) && !defined(MA_NO_RUNTIME_LINKING)
-    ma_dlclose(pContext, pContext->posix.pthreadSO);
-#else
     (void)pContext;
-#endif
 
     return MA_SUCCESS;
 }
 
 static ma_result ma_context_init_backend_apis__nix(ma_context* pContext)
 {
-    /* pthread */
-#if defined(MA_USE_RUNTIME_LINKING_FOR_PTHREAD) && !defined(MA_NO_RUNTIME_LINKING)
-    const char* libpthreadFileNames[] = {
-        "libpthread.so",
-        "libpthread.so.0",
-        "libpthread.dylib"
-    };
-    size_t i;
-
-    for (i = 0; i < sizeof(libpthreadFileNames) / sizeof(libpthreadFileNames[0]); ++i) {
-        pContext->posix.pthreadSO = ma_dlopen(pContext, libpthreadFileNames[i]);
-        if (pContext->posix.pthreadSO != NULL) {
-            break;
-        }
-    }
-
-    if (pContext->posix.pthreadSO == NULL) {
-        return MA_FAILED_TO_INIT_BACKEND;
-    }
-
-    pContext->posix.pthread_create              = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_create");
-    pContext->posix.pthread_join                = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_join");
-    pContext->posix.pthread_mutex_init          = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_mutex_init");
-    pContext->posix.pthread_mutex_destroy       = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_mutex_destroy");
-    pContext->posix.pthread_mutex_lock          = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_mutex_lock");
-    pContext->posix.pthread_mutex_unlock        = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_mutex_unlock");
-    pContext->posix.pthread_cond_init           = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_cond_init");
-    pContext->posix.pthread_cond_destroy        = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_cond_destroy");
-    pContext->posix.pthread_cond_wait           = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_cond_wait");
-    pContext->posix.pthread_cond_signal         = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_cond_signal");
-    pContext->posix.pthread_attr_init           = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_attr_init");
-    pContext->posix.pthread_attr_destroy        = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_attr_destroy");
-    pContext->posix.pthread_attr_setschedpolicy = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_attr_setschedpolicy");
-    pContext->posix.pthread_attr_getschedparam  = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_attr_getschedparam");
-    pContext->posix.pthread_attr_setschedparam  = (ma_proc)ma_dlsym(pContext, pContext->posix.pthreadSO, "pthread_attr_setschedparam");
-#else
-    pContext->posix.pthread_create              = (ma_proc)pthread_create;
-    pContext->posix.pthread_join                = (ma_proc)pthread_join;
-    pContext->posix.pthread_mutex_init          = (ma_proc)pthread_mutex_init;
-    pContext->posix.pthread_mutex_destroy       = (ma_proc)pthread_mutex_destroy;
-    pContext->posix.pthread_mutex_lock          = (ma_proc)pthread_mutex_lock;
-    pContext->posix.pthread_mutex_unlock        = (ma_proc)pthread_mutex_unlock;
-    pContext->posix.pthread_cond_init           = (ma_proc)pthread_cond_init;
-    pContext->posix.pthread_cond_destroy        = (ma_proc)pthread_cond_destroy;
-    pContext->posix.pthread_cond_wait           = (ma_proc)pthread_cond_wait;
-    pContext->posix.pthread_cond_signal         = (ma_proc)pthread_cond_signal;
-    pContext->posix.pthread_attr_init           = (ma_proc)pthread_attr_init;
-    pContext->posix.pthread_attr_destroy        = (ma_proc)pthread_attr_destroy;
-#if !defined(__EMSCRIPTEN__)
-    pContext->posix.pthread_attr_setschedpolicy = (ma_proc)pthread_attr_setschedpolicy;
-    pContext->posix.pthread_attr_getschedparam  = (ma_proc)pthread_attr_getschedparam;
-    pContext->posix.pthread_attr_setschedparam  = (ma_proc)pthread_attr_setschedparam;
-#endif
-#endif
+    (void)pContext;
 
     return MA_SUCCESS;
 }
@@ -40024,7 +40240,7 @@ MA_API ma_result ma_device_job_thread_init(const ma_device_job_thread_config* pC
 
 
     /* Initialize the job queue before the thread to ensure it's in a valid state. */
-    jobQueueConfig = ma_job_queue_config_init(pConfig->jobQueueFlags, pConfig->jobQueueCapacity);   
+    jobQueueConfig = ma_job_queue_config_init(pConfig->jobQueueFlags, pConfig->jobQueueCapacity);
 
     result = ma_job_queue_init(&jobQueueConfig, pAllocationCallbacks, &pJobThread->jobQueue);
     if (result != MA_SUCCESS) {
@@ -40277,7 +40493,16 @@ MA_API ma_result ma_context_init(const ma_backend backends[], ma_uint32 backendC
             ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "Attempting to initialize %s backend...\n", ma_get_backend_name(backend));
             result = pContext->callbacks.onContextInit(pContext, pConfig, &pContext->callbacks);
         } else {
-            result = MA_NO_BACKEND;
+            /* Getting here means the onContextInit callback is not set which means the backend is not enabled. Special case for the custom backend. */
+            if (backend != ma_backend_custom) {
+                result = MA_BACKEND_NOT_ENABLED;
+            } else {
+            #if !defined(MA_HAS_CUSTOM)
+                result = MA_BACKEND_NOT_ENABLED;
+            #else
+                result = MA_NO_BACKEND;
+            #endif
+            }
         }
 
         /* If this iteration was successful, return. */
@@ -40301,7 +40526,11 @@ MA_API ma_result ma_context_init(const ma_backend backends[], ma_uint32 backendC
             pContext->backend = backend;
             return result;
         } else {
-            ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "Failed to initialize %s backend.\n", ma_get_backend_name(backend));
+            if (result == MA_BACKEND_NOT_ENABLED) {
+                ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "%s backend is disabled.\n", ma_get_backend_name(backend));
+            } else {
+                ma_log_postf(ma_context_get_log(pContext), MA_LOG_LEVEL_DEBUG, "Failed to initialize %s backend.\n", ma_get_backend_name(backend));
+            }
         }
     }
 
@@ -40819,7 +41048,7 @@ MA_API ma_result ma_device_init(ma_context* pContext, const ma_device_config* pC
 
         if (pConfig->deviceType == ma_device_type_playback || pConfig->deviceType == ma_device_type_duplex) {
             ma_uint64 intermediaryBufferSizeInBytes;
-            
+
             pDevice->playback.intermediaryBufferLen = 0;
             if (pConfig->deviceType == ma_device_type_duplex) {
                 pDevice->playback.intermediaryBufferCap = pDevice->capture.intermediaryBufferCap;   /* In duplex mode, make sure the intermediary buffer is always the same size as the capture side. */
@@ -40831,7 +41060,7 @@ MA_API ma_result ma_device_init(ma_context* pContext, const ma_device_config* pC
             }
 
             intermediaryBufferSizeInBytes = pDevice->playback.intermediaryBufferCap * ma_get_bytes_per_frame(pDevice->playback.format, pDevice->playback.channels);
-            
+
             pDevice->playback.pIntermediaryBuffer = ma_malloc((size_t)intermediaryBufferSizeInBytes, &pContext->allocationCallbacks);
             if (pDevice->playback.pIntermediaryBuffer == NULL) {
                 ma_device_uninit(pDevice);
@@ -41994,12 +42223,6 @@ static MA_INLINE void ma_pcm_u8_to_s16__sse2(void* dst, const void* src, ma_uint
     ma_pcm_u8_to_s16__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_u8_to_s16__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_u8_to_s16__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_u8_to_s16__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42012,15 +42235,11 @@ MA_API void ma_pcm_u8_to_s16(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_u8_to_s16__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_u8_to_s16__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_u8_to_s16__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_u8_to_s16__neon(dst, src, count, ditherMode);
         } else
@@ -42061,12 +42280,6 @@ static MA_INLINE void ma_pcm_u8_to_s24__sse2(void* dst, const void* src, ma_uint
     ma_pcm_u8_to_s24__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_u8_to_s24__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_u8_to_s24__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_u8_to_s24__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42079,15 +42292,11 @@ MA_API void ma_pcm_u8_to_s24(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_u8_to_s24__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_u8_to_s24__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_u8_to_s24__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_u8_to_s24__neon(dst, src, count, ditherMode);
         } else
@@ -42126,12 +42335,6 @@ static MA_INLINE void ma_pcm_u8_to_s32__sse2(void* dst, const void* src, ma_uint
     ma_pcm_u8_to_s32__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_u8_to_s32__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_u8_to_s32__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_u8_to_s32__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42144,15 +42347,11 @@ MA_API void ma_pcm_u8_to_s32(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_u8_to_s32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_u8_to_s32__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_u8_to_s32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_u8_to_s32__neon(dst, src, count, ditherMode);
         } else
@@ -42192,12 +42391,6 @@ static MA_INLINE void ma_pcm_u8_to_f32__sse2(void* dst, const void* src, ma_uint
     ma_pcm_u8_to_f32__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_u8_to_f32__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_u8_to_f32__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_u8_to_f32__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42210,15 +42403,11 @@ MA_API void ma_pcm_u8_to_f32(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_u8_to_f32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_u8_to_f32__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_u8_to_f32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_u8_to_f32__neon(dst, src, count, ditherMode);
         } else
@@ -42354,12 +42543,6 @@ static MA_INLINE void ma_pcm_s16_to_u8__sse2(void* dst, const void* src, ma_uint
     ma_pcm_s16_to_u8__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s16_to_u8__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s16_to_u8__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s16_to_u8__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42372,15 +42555,11 @@ MA_API void ma_pcm_s16_to_u8(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s16_to_u8__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s16_to_u8__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s16_to_u8__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s16_to_u8__neon(dst, src, count, ditherMode);
         } else
@@ -42425,12 +42604,6 @@ static MA_INLINE void ma_pcm_s16_to_s24__sse2(void* dst, const void* src, ma_uin
     ma_pcm_s16_to_s24__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s16_to_s24__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s16_to_s24__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s16_to_s24__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42443,15 +42616,11 @@ MA_API void ma_pcm_s16_to_s24(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s16_to_s24__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s16_to_s24__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s16_to_s24__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s16_to_s24__neon(dst, src, count, ditherMode);
         } else
@@ -42487,12 +42656,6 @@ static MA_INLINE void ma_pcm_s16_to_s32__sse2(void* dst, const void* src, ma_uin
     ma_pcm_s16_to_s32__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s16_to_s32__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s16_to_s32__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s16_to_s32__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42505,15 +42668,11 @@ MA_API void ma_pcm_s16_to_s32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s16_to_s32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s16_to_s32__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s16_to_s32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s16_to_s32__neon(dst, src, count, ditherMode);
         } else
@@ -42561,12 +42720,6 @@ static MA_INLINE void ma_pcm_s16_to_f32__sse2(void* dst, const void* src, ma_uin
     ma_pcm_s16_to_f32__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s16_to_f32__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s16_to_f32__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s16_to_f32__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42579,15 +42732,11 @@ MA_API void ma_pcm_s16_to_f32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s16_to_f32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s16_to_f32__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s16_to_f32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s16_to_f32__neon(dst, src, count, ditherMode);
         } else
@@ -42699,12 +42848,6 @@ static MA_INLINE void ma_pcm_s24_to_u8__sse2(void* dst, const void* src, ma_uint
     ma_pcm_s24_to_u8__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s24_to_u8__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s24_to_u8__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s24_to_u8__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42717,15 +42860,11 @@ MA_API void ma_pcm_s24_to_u8(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s24_to_u8__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s24_to_u8__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s24_to_u8__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s24_to_u8__neon(dst, src, count, ditherMode);
         } else
@@ -42779,12 +42918,6 @@ static MA_INLINE void ma_pcm_s24_to_s16__sse2(void* dst, const void* src, ma_uin
     ma_pcm_s24_to_s16__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s24_to_s16__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s24_to_s16__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s24_to_s16__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42797,15 +42930,11 @@ MA_API void ma_pcm_s24_to_s16(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s24_to_s16__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s24_to_s16__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s24_to_s16__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s24_to_s16__neon(dst, src, count, ditherMode);
         } else
@@ -42849,12 +42978,6 @@ static MA_INLINE void ma_pcm_s24_to_s32__sse2(void* dst, const void* src, ma_uin
     ma_pcm_s24_to_s32__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s24_to_s32__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s24_to_s32__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s24_to_s32__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42867,15 +42990,11 @@ MA_API void ma_pcm_s24_to_s32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s24_to_s32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s24_to_s32__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s24_to_s32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s24_to_s32__neon(dst, src, count, ditherMode);
         } else
@@ -42923,12 +43042,6 @@ static MA_INLINE void ma_pcm_s24_to_f32__sse2(void* dst, const void* src, ma_uin
     ma_pcm_s24_to_f32__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s24_to_f32__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s24_to_f32__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s24_to_f32__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -42941,15 +43054,11 @@ MA_API void ma_pcm_s24_to_f32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s24_to_f32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s24_to_f32__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s24_to_f32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s24_to_f32__neon(dst, src, count, ditherMode);
         } else
@@ -43069,12 +43178,6 @@ static MA_INLINE void ma_pcm_s32_to_u8__sse2(void* dst, const void* src, ma_uint
     ma_pcm_s32_to_u8__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s32_to_u8__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s32_to_u8__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s32_to_u8__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -43087,15 +43190,11 @@ MA_API void ma_pcm_s32_to_u8(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s32_to_u8__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s32_to_u8__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s32_to_u8__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s32_to_u8__neon(dst, src, count, ditherMode);
         } else
@@ -43149,12 +43248,6 @@ static MA_INLINE void ma_pcm_s32_to_s16__sse2(void* dst, const void* src, ma_uin
     ma_pcm_s32_to_s16__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s32_to_s16__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s32_to_s16__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s32_to_s16__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -43167,15 +43260,11 @@ MA_API void ma_pcm_s32_to_s16(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s32_to_s16__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s32_to_s16__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s32_to_s16__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s32_to_s16__neon(dst, src, count, ditherMode);
         } else
@@ -43214,12 +43303,6 @@ static MA_INLINE void ma_pcm_s32_to_s24__sse2(void* dst, const void* src, ma_uin
     ma_pcm_s32_to_s24__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s32_to_s24__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s32_to_s24__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s32_to_s24__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -43232,15 +43315,11 @@ MA_API void ma_pcm_s32_to_s24(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s32_to_s24__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s32_to_s24__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s32_to_s24__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s32_to_s24__neon(dst, src, count, ditherMode);
         } else
@@ -43294,12 +43373,6 @@ static MA_INLINE void ma_pcm_s32_to_f32__sse2(void* dst, const void* src, ma_uin
     ma_pcm_s32_to_f32__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_s32_to_f32__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_s32_to_f32__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_s32_to_f32__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -43312,15 +43385,11 @@ MA_API void ma_pcm_s32_to_f32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_s32_to_f32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_s32_to_f32__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_s32_to_f32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_s32_to_f32__neon(dst, src, count, ditherMode);
         } else
@@ -43427,12 +43496,6 @@ static MA_INLINE void ma_pcm_f32_to_u8__sse2(void* dst, const void* src, ma_uint
     ma_pcm_f32_to_u8__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_f32_to_u8__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_f32_to_u8__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_f32_to_u8__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -43445,15 +43508,11 @@ MA_API void ma_pcm_f32_to_u8(void* dst, const void* src, ma_uint64 count, ma_dit
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_f32_to_u8__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_f32_to_u8__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_f32_to_u8__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_f32_to_u8__neon(dst, src, count, ditherMode);
         } else
@@ -43657,129 +43716,6 @@ static MA_INLINE void ma_pcm_f32_to_s16__sse2(void* dst, const void* src, ma_uin
 }
 #endif  /* SSE2 */
 
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_f32_to_s16__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_uint64 i;
-    ma_uint64 i16;
-    ma_uint64 count16;
-    ma_int16* dst_s16;
-    const float* src_f32;
-    float ditherMin;
-    float ditherMax;
-
-    /* Both the input and output buffers need to be aligned to 32 bytes. */
-    if ((((ma_uintptr)dst & 31) != 0) || (((ma_uintptr)src & 31) != 0)) {
-        ma_pcm_f32_to_s16__optimized(dst, src, count, ditherMode);
-        return;
-    }
-
-    dst_s16 = (ma_int16*)dst;
-    src_f32 = (const float*)src;
-
-    ditherMin = 0;
-    ditherMax = 0;
-    if (ditherMode != ma_dither_mode_none) {
-        ditherMin = 1.0f / -32768;
-        ditherMax = 1.0f /  32767;
-    }
-
-    i = 0;
-
-    /* AVX2. AVX2 allows us to output 16 s16's at a time which means our loop is unrolled 16 times. */
-    count16 = count >> 4;
-    for (i16 = 0; i16 < count16; i16 += 1) {
-        __m256 d0;
-        __m256 d1;
-        __m256 x0;
-        __m256 x1;
-        __m256i i0;
-        __m256i i1;
-        __m256i p0;
-        __m256i p1;
-        __m256i r;
-
-        if (ditherMode == ma_dither_mode_none) {
-            d0 = _mm256_set1_ps(0);
-            d1 = _mm256_set1_ps(0);
-        } else if (ditherMode == ma_dither_mode_rectangle) {
-            d0 = _mm256_set_ps(
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax)
-            );
-            d1 = _mm256_set_ps(
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax),
-                ma_dither_f32_rectangle(ditherMin, ditherMax)
-            );
-        } else {
-            d0 = _mm256_set_ps(
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax)
-            );
-            d1 = _mm256_set_ps(
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax),
-                ma_dither_f32_triangle(ditherMin, ditherMax)
-            );
-        }
-
-        x0 = *((__m256*)(src_f32 + i) + 0);
-        x1 = *((__m256*)(src_f32 + i) + 1);
-
-        x0 = _mm256_add_ps(x0, d0);
-        x1 = _mm256_add_ps(x1, d1);
-
-        x0 = _mm256_mul_ps(x0, _mm256_set1_ps(32767.0f));
-        x1 = _mm256_mul_ps(x1, _mm256_set1_ps(32767.0f));
-
-        /* Computing the final result is a little more complicated for AVX2 than SSE2. */
-        i0 = _mm256_cvttps_epi32(x0);
-        i1 = _mm256_cvttps_epi32(x1);
-        p0 = _mm256_permute2x128_si256(i0, i1, 0 | 32);
-        p1 = _mm256_permute2x128_si256(i0, i1, 1 | 48);
-        r  = _mm256_packs_epi32(p0, p1);
-
-        _mm256_stream_si256(((__m256i*)(dst_s16 + i)), r);
-
-        i += 16;
-    }
-
-
-    /* Leftover. */
-    for (; i < count; i += 1) {
-        float x = src_f32[i];
-        x = x + ma_dither_f32(ditherMode, ditherMin, ditherMax);
-        x = ((x < -1) ? -1 : ((x > 1) ? 1 : x));    /* clip */
-        x = x * 32767.0f;                           /* -1..1 to -32767..32767 */
-
-        dst_s16[i] = (ma_int16)x;
-    }
-}
-#endif  /* AVX2 */
-
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_f32_to_s16__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -43792,7 +43728,8 @@ static MA_INLINE void ma_pcm_f32_to_s16__neon(void* dst, const void* src, ma_uin
     float ditherMax;
 
     if (!ma_has_neon()) {
-        return ma_pcm_f32_to_s16__optimized(dst, src, count, ditherMode);
+        ma_pcm_f32_to_s16__optimized(dst, src, count, ditherMode);
+        return;
     }
 
     /* Both the input and output buffers need to be aligned to 16 bytes. */
@@ -43891,15 +43828,11 @@ MA_API void ma_pcm_f32_to_s16(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_f32_to_s16__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_f32_to_s16__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_f32_to_s16__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_f32_to_s16__neon(dst, src, count, ditherMode);
         } else
@@ -43952,12 +43885,6 @@ static MA_INLINE void ma_pcm_f32_to_s24__sse2(void* dst, const void* src, ma_uin
     ma_pcm_f32_to_s24__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_f32_to_s24__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_f32_to_s24__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_f32_to_s24__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -43970,15 +43897,11 @@ MA_API void ma_pcm_f32_to_s24(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_f32_to_s24__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_f32_to_s24__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_f32_to_s24__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_f32_to_s24__neon(dst, src, count, ditherMode);
         } else
@@ -44027,12 +43950,6 @@ static MA_INLINE void ma_pcm_f32_to_s32__sse2(void* dst, const void* src, ma_uin
     ma_pcm_f32_to_s32__optimized(dst, src, count, ditherMode);
 }
 #endif
-#if defined(MA_SUPPORT_AVX2)
-static MA_INLINE void ma_pcm_f32_to_s32__avx2(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
-{
-    ma_pcm_f32_to_s32__optimized(dst, src, count, ditherMode);
-}
-#endif
 #if defined(MA_SUPPORT_NEON)
 static MA_INLINE void ma_pcm_f32_to_s32__neon(void* dst, const void* src, ma_uint64 count, ma_dither_mode ditherMode)
 {
@@ -44045,15 +43962,11 @@ MA_API void ma_pcm_f32_to_s32(void* dst, const void* src, ma_uint64 count, ma_di
 #ifdef MA_USE_REFERENCE_CONVERSION_APIS
     ma_pcm_f32_to_s32__reference(dst, src, count, ditherMode);
 #else
-    #  if MA_PREFERRED_SIMD == MA_SIMD_AVX2
-        if (ma_has_avx2()) {
-            ma_pcm_f32_to_s32__avx2(dst, src, count, ditherMode);
-        } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_SSE2
+    #  if defined(MA_SUPPORT_SSE2)
         if (ma_has_sse2()) {
             ma_pcm_f32_to_s32__sse2(dst, src, count, ditherMode);
         } else
-    #elif MA_PREFERRED_SIMD == MA_SIMD_NEON
+    #elif defined(MA_SUPPORT_NEON)
         if (ma_has_neon()) {
             ma_pcm_f32_to_s32__neon(dst, src, count, ditherMode);
         } else
@@ -47785,6 +47698,7 @@ MA_API ma_result ma_gainer_init_preallocated(const ma_gainer_config* pConfig, vo
 
     pGainer->pOldGains = (float*)ma_offset_ptr(pHeap, heapLayout.oldGainsOffset);
     pGainer->pNewGains = (float*)ma_offset_ptr(pHeap, heapLayout.newGainsOffset);
+    pGainer->masterVolume = 1;
 
     pGainer->config = *pConfig;
     pGainer->t      = (ma_uint32)-1;  /* No interpolation by default. */
@@ -47844,20 +47758,256 @@ static float ma_gainer_calculate_current_gain(const ma_gainer* pGainer, ma_uint3
     return ma_mix_f32_fast(pGainer->pOldGains[channel], pGainer->pNewGains[channel], a);
 }
 
-MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+static /*__attribute__((noinline))*/ ma_result ma_gainer_process_pcm_frames_internal(ma_gainer * pGainer, void* MA_RESTRICT pFramesOut, const void* MA_RESTRICT pFramesIn, ma_uint64 frameCount)
 {
     ma_uint64 iFrame;
     ma_uint32 iChannel;
-    float* pFramesOutF32 = (float*)pFramesOut;
-    const float* pFramesInF32 = (const float*)pFramesIn;
+    ma_uint64 interpolatedFrameCount;
 
-    if (pGainer == NULL) {
-        return MA_INVALID_ARGS;
+    MA_ASSERT(pGainer != NULL);
+
+    /*
+    We don't necessarily need to apply a linear interpolation for the entire frameCount frames. When
+    linear interpolation is not needed we can do a simple volume adjustment which will be more
+    efficient than a lerp with an alpha value of 1.
+
+    To do this, all we need to do is determine how many frames need to have a lerp applied. Then we
+    just process that number of frames with linear interpolation. After that we run on an optimized
+    path which just applies the new gains without a lerp.
+    */
+    if (pGainer->t >= pGainer->config.smoothTimeInFrames) {
+        interpolatedFrameCount = 0;
+    } else {
+        interpolatedFrameCount = pGainer->t - pGainer->config.smoothTimeInFrames;
+        if (interpolatedFrameCount > frameCount) {
+            interpolatedFrameCount = frameCount;
+        }
     }
 
+    /*
+    Start off with our interpolated frames. When we do this, we'll adjust frameCount and our pointers
+    so that the fast path can work naturally without consideration of the interpolated path.
+    */
+    if (interpolatedFrameCount > 0) {
+        /* We can allow the input and output buffers to be null in which case we'll just update the internal timer. */
+        if (pFramesOut != NULL && pFramesIn != NULL) {
+            /*
+            All we're really doing here is moving the old gains towards the new gains. We don't want to
+            be modifying the gains inside the ma_gainer object because that will break things. Instead
+            we can make a copy here on the stack. For extreme channel counts we can fall back to a slower
+            implementation which just uses a standard lerp.
+            */
+            float* pFramesOutF32 = (float*)pFramesOut;
+            const float* pFramesInF32 = (const float*)pFramesIn;
+            float a = (float)pGainer->t / pGainer->config.smoothTimeInFrames;
+            float d = 1.0f / pGainer->config.smoothTimeInFrames;
+
+            if (pGainer->config.channels <= 32) {
+                float pRunningGain[32];
+                float pRunningGainDelta[32];    /* Could this be heap-allocated as part of the ma_gainer object? */
+
+                /* Initialize the running gain. */
+                for (iChannel = 0; iChannel < pGainer->config.channels; iChannel += 1) {
+                    float t = (pGainer->pOldGains[iChannel] - pGainer->pNewGains[iChannel]) * pGainer->masterVolume;
+                    pRunningGainDelta[iChannel] = t * d;
+                    pRunningGain[iChannel] = (pGainer->pOldGains[iChannel] * pGainer->masterVolume) + (t * a);
+                }
+
+                iFrame = 0;
+
+                /* Optimized paths for common channel counts. This is mostly just experimenting with some SIMD ideas. It's not necessarily final. */
+                if (pGainer->config.channels == 2) {
+                #if defined(MA_SUPPORT_SSE2)
+                    if (ma_has_sse2()) {
+                        ma_uint64 unrolledLoopCount = interpolatedFrameCount >> 1;
+
+                        /* Expand some arrays so we can have a clean SIMD loop below. */
+                        __m128 runningGainDelta0 = _mm_set_ps(pRunningGainDelta[1], pRunningGainDelta[0], pRunningGainDelta[1], pRunningGainDelta[0]);
+                        __m128 runningGain0      = _mm_set_ps(pRunningGain[1] + pRunningGainDelta[1], pRunningGain[0] + pRunningGainDelta[0], pRunningGain[1], pRunningGain[0]);
+
+                        for (; iFrame < unrolledLoopCount; iFrame += 1) {
+                            _mm_storeu_ps(&pFramesOutF32[iFrame*4 + 0], _mm_mul_ps(_mm_loadu_ps(&pFramesInF32[iFrame*4 + 0]), runningGain0));
+                            runningGain0 = _mm_add_ps(runningGain0, runningGainDelta0);
+                        }
+
+                        iFrame = unrolledLoopCount << 1;
+                    } else
+                #endif
+                    {
+                        /*
+                        Two different scalar implementations here. Clang (and I assume GCC) will vectorize
+                        both of these, but the bottom version results in a nicer vectorization with less
+                        instructions emitted. The problem, however, is that the bottom version runs slower
+                        when compiled with MSVC. The top version will be partially vectorized by MSVC.
+                        */
+                    #if defined(_MSC_VER) && !defined(__clang__)
+                        ma_uint64 unrolledLoopCount = interpolatedFrameCount >> 1;
+
+                        /* Expand some arrays so we can have a clean 4x SIMD operation in the loop. */
+                        pRunningGainDelta[2] = pRunningGainDelta[0];
+                        pRunningGainDelta[3] = pRunningGainDelta[1];
+                        pRunningGain[2] = pRunningGain[0] + pRunningGainDelta[0];
+                        pRunningGain[3] = pRunningGain[1] + pRunningGainDelta[1];
+
+                        for (; iFrame < unrolledLoopCount; iFrame += 1) {
+                            pFramesOutF32[iFrame*4 + 0] = pFramesInF32[iFrame*4 + 0] * pRunningGain[0];
+                            pFramesOutF32[iFrame*4 + 1] = pFramesInF32[iFrame*4 + 1] * pRunningGain[1];
+                            pFramesOutF32[iFrame*4 + 2] = pFramesInF32[iFrame*4 + 2] * pRunningGain[2];
+                            pFramesOutF32[iFrame*4 + 3] = pFramesInF32[iFrame*4 + 3] * pRunningGain[3];
+
+                            /* Move the running gain forward towards the new gain. */
+                            pRunningGain[0] += pRunningGainDelta[0];
+                            pRunningGain[1] += pRunningGainDelta[1];
+                            pRunningGain[2] += pRunningGainDelta[2];
+                            pRunningGain[3] += pRunningGainDelta[3];
+                        }
+
+                        iFrame = unrolledLoopCount << 1;
+                    #else
+                        for (; iFrame < interpolatedFrameCount; iFrame += 1) {
+                            for (iChannel = 0; iChannel < 2; iChannel += 1) {
+                                pFramesOutF32[iFrame*2 + iChannel] = pFramesInF32[iFrame*2 + iChannel] * pRunningGain[iChannel];
+                            }
+
+                            for (iChannel = 0; iChannel < 2; iChannel += 1) {
+                                pRunningGain[iChannel] += pRunningGainDelta[iChannel];
+                            }
+                        }
+                    #endif
+                    }
+                } else if (pGainer->config.channels == 6) {
+                #if defined(MA_SUPPORT_SSE2)
+                    if (ma_has_sse2()) {
+                        /*
+                        For 6 channels things are a bit more complicated because 6 isn't cleanly divisible by 4. We need to do 2 frames
+                        at a time, meaning we'll be doing 12 samples in a group. Like the stereo case we'll need to expand some arrays
+                        so we can do clean 4x SIMD operations.
+                        */
+                        ma_uint64 unrolledLoopCount = interpolatedFrameCount >> 1;
+
+                        /* Expand some arrays so we can have a clean SIMD loop below. */
+                        __m128 runningGainDelta0 = _mm_set_ps(pRunningGainDelta[3], pRunningGainDelta[2], pRunningGainDelta[1], pRunningGainDelta[0]);
+                        __m128 runningGainDelta1 = _mm_set_ps(pRunningGainDelta[1], pRunningGainDelta[0], pRunningGainDelta[5], pRunningGainDelta[4]);
+                        __m128 runningGainDelta2 = _mm_set_ps(pRunningGainDelta[5], pRunningGainDelta[4], pRunningGainDelta[3], pRunningGainDelta[2]);
+
+                        __m128 runningGain0      = _mm_set_ps(pRunningGain[3],                        pRunningGain[2],                        pRunningGain[1],                        pRunningGain[0]);
+                        __m128 runningGain1      = _mm_set_ps(pRunningGain[1] + pRunningGainDelta[1], pRunningGain[0] + pRunningGainDelta[0], pRunningGain[5],                        pRunningGain[4]);
+                        __m128 runningGain2      = _mm_set_ps(pRunningGain[5] + pRunningGainDelta[5], pRunningGain[4] + pRunningGainDelta[4], pRunningGain[3] + pRunningGainDelta[3], pRunningGain[2] + pRunningGainDelta[2]);
+
+                        for (; iFrame < unrolledLoopCount; iFrame += 1) {
+                            _mm_storeu_ps(&pFramesOutF32[iFrame*12 + 0], _mm_mul_ps(_mm_loadu_ps(&pFramesInF32[iFrame*12 + 0]), runningGain0));
+                            _mm_storeu_ps(&pFramesOutF32[iFrame*12 + 4], _mm_mul_ps(_mm_loadu_ps(&pFramesInF32[iFrame*12 + 4]), runningGain1));
+                            _mm_storeu_ps(&pFramesOutF32[iFrame*12 + 8], _mm_mul_ps(_mm_loadu_ps(&pFramesInF32[iFrame*12 + 8]), runningGain2));
+
+                            runningGain0 = _mm_add_ps(runningGain0, runningGainDelta0);
+                            runningGain1 = _mm_add_ps(runningGain1, runningGainDelta1);
+                            runningGain2 = _mm_add_ps(runningGain2, runningGainDelta2);
+                        }
+
+                        iFrame = unrolledLoopCount << 1;
+                    } else
+                #endif
+                    {
+                        for (; iFrame < interpolatedFrameCount; iFrame += 1) {
+                            for (iChannel = 0; iChannel < 6; iChannel += 1) {
+                                pFramesOutF32[iFrame*6 + iChannel] = pFramesInF32[iFrame*6 + iChannel] * pRunningGain[iChannel];
+                            }
+
+                            /* Move the running gain forward towards the new gain. */
+                            for (iChannel = 0; iChannel < 6; iChannel += 1) {
+                                pRunningGain[iChannel] += pRunningGainDelta[iChannel];
+                            }
+                        }
+                    }
+                } else if (pGainer->config.channels == 8) {
+                    /* For 8 channels we can just go over frame by frame and do all eight channels as 2 separate 4x SIMD operations. */
+                #if defined(MA_SUPPORT_SSE2)
+                    if (ma_has_sse2()) {
+                        __m128 runningGainDelta0 = _mm_loadu_ps(&pRunningGainDelta[0]);
+                        __m128 runningGainDelta1 = _mm_loadu_ps(&pRunningGainDelta[4]);
+                        __m128 runningGain0      = _mm_loadu_ps(&pRunningGain[0]);
+                        __m128 runningGain1      = _mm_loadu_ps(&pRunningGain[4]);
+
+                        for (; iFrame < interpolatedFrameCount; iFrame += 1) {
+                            _mm_storeu_ps(&pFramesOutF32[iFrame*8 + 0], _mm_mul_ps(_mm_loadu_ps(&pFramesInF32[iFrame*8 + 0]), runningGain0));
+                            _mm_storeu_ps(&pFramesOutF32[iFrame*8 + 4], _mm_mul_ps(_mm_loadu_ps(&pFramesInF32[iFrame*8 + 4]), runningGain1));
+
+                            runningGain0 = _mm_add_ps(runningGain0, runningGainDelta0);
+                            runningGain1 = _mm_add_ps(runningGain1, runningGainDelta1);
+                        }
+                    } else
+                #endif
+                    {
+                        /* This is crafted so that it auto-vectorizes when compiled with Clang. */
+                        for (; iFrame < interpolatedFrameCount; iFrame += 1) {
+                            for (iChannel = 0; iChannel < 8; iChannel += 1) {
+                                pFramesOutF32[iFrame*8 + iChannel] = pFramesInF32[iFrame*8 + iChannel] * pRunningGain[iChannel];
+                            }
+
+                            /* Move the running gain forward towards the new gain. */
+                            for (iChannel = 0; iChannel < 8; iChannel += 1) {
+                                pRunningGain[iChannel] += pRunningGainDelta[iChannel];
+                            }
+                        }
+                    }
+                }
+
+                for (; iFrame < interpolatedFrameCount; iFrame += 1) {
+                    for (iChannel = 0; iChannel < pGainer->config.channels; iChannel += 1) {
+                        pFramesOutF32[iFrame*pGainer->config.channels + iChannel] = pFramesInF32[iFrame*pGainer->config.channels + iChannel] * pRunningGain[iChannel];
+                        pRunningGain[iChannel] += pRunningGainDelta[iChannel];
+                    }
+                }
+            } else {
+                /* Slower path for extreme channel counts where we can't fit enough on the stack. We could also move this to the heap as part of the ma_gainer object which might even be better since it'll only be updated when the gains actually change. */
+                for (iFrame = 0; iFrame < interpolatedFrameCount; iFrame += 1) {
+                    for (iChannel = 0; iChannel < pGainer->config.channels; iChannel += 1) {
+                        pFramesOutF32[iFrame*pGainer->config.channels + iChannel] = pFramesInF32[iFrame*pGainer->config.channels + iChannel] * ma_mix_f32_fast(pGainer->pOldGains[iChannel], pGainer->pNewGains[iChannel], a) * pGainer->masterVolume;
+                    }
+
+                    a += d;
+                }
+            }
+        }
+
+        /* Make sure the timer is updated. */
+        pGainer->t = (ma_uint32)ma_min(pGainer->t + interpolatedFrameCount, pGainer->config.smoothTimeInFrames);
+
+        /* Adjust our arguments so the next part can work normally. */
+        frameCount -= interpolatedFrameCount;
+        pFramesOut  = ma_offset_ptr(pFramesOut, interpolatedFrameCount * sizeof(float));
+        pFramesIn   = ma_offset_ptr(pFramesIn,  interpolatedFrameCount * sizeof(float));
+    }
+
+    /* All we need to do here is apply the new gains using an optimized path. */
+    if (pFramesOut != NULL && pFramesIn != NULL) {
+        if (pGainer->config.channels <= 32) {
+            float gains[32];
+            for (iChannel = 0; iChannel < pGainer->config.channels; iChannel += 1) {
+                gains[iChannel] = pGainer->pNewGains[iChannel] * pGainer->masterVolume;
+            }
+
+            ma_copy_and_apply_volume_factor_per_channel_f32((float*)pFramesOut, (const float*)pFramesIn, frameCount, pGainer->config.channels, gains);
+        } else {
+            /* Slow path. Too many channels to fit on the stack. Need to apply a master volume as a separate path. */
+            for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
+                for (iChannel = 0; iChannel < pGainer->config.channels; iChannel += 1) {
+                    ((float*)pFramesOut)[iFrame*pGainer->config.channels + iChannel] = ((const float*)pFramesIn)[iFrame*pGainer->config.channels + iChannel] * pGainer->pNewGains[iChannel] * pGainer->masterVolume;
+                }
+            }
+        }
+    }
+
+    /* Now that some frames have been processed we need to make sure future changes to the gain are interpolated. */
+    if (pGainer->t == (ma_uint32)-1) {
+        pGainer->t  = (ma_uint32)ma_min(pGainer->config.smoothTimeInFrames, frameCount);
+    }
+
+#if 0
     if (pGainer->t >= pGainer->config.smoothTimeInFrames) {
         /* Fast path. No gain calculation required. */
         ma_copy_and_apply_volume_factor_per_channel_f32(pFramesOutF32, pFramesInF32, frameCount, pGainer->config.channels, pGainer->pNewGains);
+        ma_apply_volume_factor_f32(pFramesOutF32, frameCount * pGainer->config.channels, pGainer->masterVolume);
 
         /* Now that some frames have been processed we need to make sure future changes to the gain are interpolated. */
         if (pGainer->t == (ma_uint32)-1) {
@@ -47874,7 +48024,7 @@ MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesO
 
             for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
                 for (iChannel = 0; iChannel < channelCount; iChannel += 1) {
-                    pFramesOutF32[iChannel] = pFramesInF32[iChannel] * ma_mix_f32_fast(pGainer->pOldGains[iChannel], pGainer->pNewGains[iChannel], a);
+                    pFramesOutF32[iChannel] = pFramesInF32[iChannel] * ma_mix_f32_fast(pGainer->pOldGains[iChannel], pGainer->pNewGains[iChannel], a) * pGainer->masterVolume;
                 }
 
                 pFramesOutF32 += channelCount;
@@ -47894,7 +48044,7 @@ MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesO
             /* We can allow the input and output buffers to be null in which case we'll just update the internal timer. */
             if (pFramesOut != NULL && pFramesIn != NULL) {
                 for (iChannel = 0; iChannel < pGainer->config.channels; iChannel += 1) {
-                    pFramesOutF32[iFrame*pGainer->config.channels + iChannel] = pFramesInF32[iFrame*pGainer->config.channels + iChannel] * ma_gainer_calculate_current_gain(pGainer, iChannel);
+                    pFramesOutF32[iFrame * pGainer->config.channels + iChannel] = pFramesInF32[iFrame * pGainer->config.channels + iChannel] * ma_gainer_calculate_current_gain(pGainer, iChannel) * pGainer->masterVolume;
                 }
             }
 
@@ -47903,8 +48053,22 @@ MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesO
         }
     #endif
     }
+#endif
 
     return MA_SUCCESS;
+}
+
+MA_API ma_result ma_gainer_process_pcm_frames(ma_gainer* pGainer, void* pFramesOut, const void* pFramesIn, ma_uint64 frameCount)
+{
+    if (pGainer == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    /*
+    ma_gainer_process_pcm_frames_internal() marks pFramesOut and pFramesIn with MA_RESTRICT which
+    helps with auto-vectorization.
+    */
+    return ma_gainer_process_pcm_frames_internal(pGainer, pFramesOut, pFramesIn, frameCount);
 }
 
 static void ma_gainer_set_gain_by_index(ma_gainer* pGainer, float newGain, ma_uint32 iChannel)
@@ -47954,6 +48118,28 @@ MA_API ma_result ma_gainer_set_gains(ma_gainer* pGainer, float* pNewGains)
 
     /* The smoothing time needs to be reset to ensure we always interpolate by the configured smoothing time, but only if it's not the first setting. */
     ma_gainer_reset_smoothing_time(pGainer);
+
+    return MA_SUCCESS;
+}
+
+MA_API ma_result ma_gainer_set_master_volume(ma_gainer* pGainer, float volume)
+{
+    if (pGainer == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    pGainer->masterVolume = volume;
+
+    return MA_SUCCESS;
+}
+
+MA_API ma_result ma_gainer_get_master_volume(const ma_gainer* pGainer, float* pVolume)
+{
+    if (pGainer == NULL || pVolume == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    *pVolume = pGainer->masterVolume;
 
     return MA_SUCCESS;
 }
@@ -48307,7 +48493,7 @@ MA_API void ma_fader_set_fade(ma_fader* pFader, float volumeBeg, float volumeEnd
     pFader->cursorInFrames = 0; /* Reset cursor. */
 }
 
-MA_API float ma_fader_get_current_volume(ma_fader* pFader)
+MA_API float ma_fader_get_current_volume(const ma_fader* pFader)
 {
     if (pFader == NULL) {
         return 0.0f;
@@ -49449,6 +49635,24 @@ MA_API ma_result ma_spatializer_process_pcm_frames(ma_spatializer* pSpatializer,
     }
 
     return MA_SUCCESS;
+}
+
+MA_API ma_result ma_spatializer_set_master_volume(ma_spatializer* pSpatializer, float volume)
+{
+    if (pSpatializer == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    return ma_gainer_set_master_volume(&pSpatializer->gainer, volume);
+}
+
+MA_API ma_result ma_spatializer_get_master_volume(const ma_spatializer* pSpatializer, float* pVolume)
+{
+    if (pSpatializer == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    return ma_gainer_get_master_volume(&pSpatializer->gainer, pVolume);
 }
 
 MA_API ma_uint32 ma_spatializer_get_input_channels(const ma_spatializer* pSpatializer)
@@ -51539,7 +51743,7 @@ static ma_result ma_channel_map_apply_mono_out_f32(float* pFramesOut, const floa
     return MA_SUCCESS;
 }
 
-static ma_result ma_channel_map_apply_mono_in_f32(float* pFramesOut, const ma_channel* pChannelMapOut, ma_uint32 channelsOut, const float* pFramesIn, ma_uint64 frameCount, ma_mono_expansion_mode monoExpansionMode)
+static ma_result ma_channel_map_apply_mono_in_f32(float* MA_RESTRICT pFramesOut, const ma_channel* pChannelMapOut, ma_uint32 channelsOut, const float* MA_RESTRICT pFramesIn, ma_uint64 frameCount, ma_mono_expansion_mode monoExpansionMode)
 {
     ma_uint64 iFrame;
     ma_uint32 iChannelOut;
@@ -51644,16 +51848,121 @@ static ma_result ma_channel_map_apply_mono_in_f32(float* pFramesOut, const ma_ch
         {
             default_handler:
             {
-                for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
+                if (channelsOut <= MA_MAX_CHANNELS) {
+                    ma_bool32 hasEmptyChannel = MA_FALSE;
+                    ma_channel channelPositions[MA_MAX_CHANNELS];
                     for (iChannelOut = 0; iChannelOut < channelsOut; iChannelOut += 1) {
-                        ma_channel channelOut = ma_channel_map_get_channel(pChannelMapOut, channelsOut, iChannelOut);
-                        if (channelOut != MA_CHANNEL_NONE) {
-                            pFramesOut[iChannelOut] = pFramesIn[0];
+                        channelPositions[iChannelOut] = ma_channel_map_get_channel(pChannelMapOut, channelsOut, iChannelOut);
+                        if (channelPositions[iChannelOut] == MA_CHANNEL_NONE) {
+                            hasEmptyChannel = MA_TRUE;
                         }
                     }
 
-                    pFramesOut += channelsOut;
-                    pFramesIn  += 1;
+                    if (hasEmptyChannel == MA_FALSE) {
+                        /*
+                        Faster path when there's no MA_CHANNEL_NONE channel positions. This should hopefully
+                        help the compiler with auto-vectorization.m
+                        */
+                        if (channelsOut == 2) {
+                        #if defined(MA_SUPPORT_SSE2)
+                            if (ma_has_sse2()) {
+                                /* We want to do two frames in each iteration. */
+                                ma_uint64 unrolledFrameCount = frameCount >> 1;
+
+                                for (iFrame = 0; iFrame < unrolledFrameCount; iFrame += 1) {
+                                    __m128 in0 = _mm_set1_ps(pFramesIn[iFrame*2 + 0]);
+                                    __m128 in1 = _mm_set1_ps(pFramesIn[iFrame*2 + 1]);
+                                    _mm_storeu_ps(&pFramesOut[iFrame*4 + 0], _mm_shuffle_ps(in1, in0, _MM_SHUFFLE(0, 0, 0, 0)));
+                                }
+
+                                /* Tail. */
+                                iFrame = unrolledFrameCount << 1;
+                                goto generic_on_fastpath;
+                            } else
+                        #endif
+                            {
+                                for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
+                                    for (iChannelOut = 0; iChannelOut < 2; iChannelOut += 1) {
+                                        pFramesOut[iFrame*2 + iChannelOut] = pFramesIn[iFrame];
+                                    }
+                                }
+                            }
+                        } else if (channelsOut == 6) {
+                        #if defined(MA_SUPPORT_SSE2)
+                            if (ma_has_sse2()) {
+                                /* We want to do two frames in each iteration so we can have a multiple of 4 samples. */
+                                ma_uint64 unrolledFrameCount = frameCount >> 1;
+
+                                for (iFrame = 0; iFrame < unrolledFrameCount; iFrame += 1) {
+                                    __m128 in0 = _mm_set1_ps(pFramesIn[iFrame*2 + 0]);
+                                    __m128 in1 = _mm_set1_ps(pFramesIn[iFrame*2 + 1]);
+
+                                    _mm_storeu_ps(&pFramesOut[iFrame*12 + 0], in0);
+                                    _mm_storeu_ps(&pFramesOut[iFrame*12 + 4], _mm_shuffle_ps(in1, in0, _MM_SHUFFLE(0, 0, 0, 0)));
+                                    _mm_storeu_ps(&pFramesOut[iFrame*12 + 8], in1);
+                                }
+
+                                /* Tail. */
+                                iFrame = unrolledFrameCount << 1;
+                                goto generic_on_fastpath;
+                            } else
+                        #endif
+                            {
+                                for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
+                                    for (iChannelOut = 0; iChannelOut < 6; iChannelOut += 1) {
+                                        pFramesOut[iFrame*6 + iChannelOut] = pFramesIn[iFrame];
+                                    }
+                                }
+                            }
+                        } else if (channelsOut == 8) {
+                        #if defined(MA_SUPPORT_SSE2)
+                            if (ma_has_sse2()) {
+                                for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
+                                    __m128 in = _mm_set1_ps(pFramesIn[iFrame]);
+                                    _mm_storeu_ps(&pFramesOut[iFrame*8 + 0], in);
+                                    _mm_storeu_ps(&pFramesOut[iFrame*8 + 4], in);
+                                }
+                            } else
+                        #endif
+                            {
+                                for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
+                                    for (iChannelOut = 0; iChannelOut < 8; iChannelOut += 1) {
+                                        pFramesOut[iFrame*8 + iChannelOut] = pFramesIn[iFrame];
+                                    }
+                                }
+                            }
+                        } else {
+                            iFrame = 0;
+
+                            generic_on_fastpath:
+                            {
+                                for (; iFrame < frameCount; iFrame += 1) {
+                                    for (iChannelOut = 0; iChannelOut < channelsOut; iChannelOut += 1) {
+                                        pFramesOut[iFrame*channelsOut + iChannelOut] = pFramesIn[iFrame];
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        /* Slow path. Need to handle MA_CHANNEL_NONE. */
+                        for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
+                            for (iChannelOut = 0; iChannelOut < channelsOut; iChannelOut += 1) {
+                                if (channelPositions[iChannelOut] != MA_CHANNEL_NONE) {
+                                    pFramesOut[iFrame*channelsOut + iChannelOut] = pFramesIn[iFrame];
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    /* Slow path. Too many channels to store on the stack. */
+                    for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
+                        for (iChannelOut = 0; iChannelOut < channelsOut; iChannelOut += 1) {
+                            ma_channel channelOut = ma_channel_map_get_channel(pChannelMapOut, channelsOut, iChannelOut);
+                            if (channelOut != MA_CHANNEL_NONE) {
+                                pFramesOut[iFrame*channelsOut + iChannelOut] = pFramesIn[iFrame];
+                            }
+                        }
+                    }
                 }
             }
         } break;
@@ -51720,19 +52029,105 @@ static void ma_channel_map_apply_f32(float* pFramesOut, const ma_channel* pChann
                     }
                 }
 
-                for (iFrame = 0; iFrame < frameCount; iFrame += 1) {
+                iFrame = 0;
+
+                /* Experiment: Try an optimized unroll for some specific cases to see how it improves performance. RESULT: Good gains. */
+                if (channelsOut == 8) {
+                    /* Experiment 2: Expand the inner loop to see what kind of different it makes. RESULT: Small, but worthwhile gain. */
+                    if (channelsIn == 2) {
+                        for (; iFrame < frameCount; iFrame += 1) {
+                            float accumulation[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+
+                            accumulation[0] += pFramesIn[iFrame*2 + 0] * weights[0][0];
+                            accumulation[1] += pFramesIn[iFrame*2 + 0] * weights[1][0];
+                            accumulation[2] += pFramesIn[iFrame*2 + 0] * weights[2][0];
+                            accumulation[3] += pFramesIn[iFrame*2 + 0] * weights[3][0];
+                            accumulation[4] += pFramesIn[iFrame*2 + 0] * weights[4][0];
+                            accumulation[5] += pFramesIn[iFrame*2 + 0] * weights[5][0];
+                            accumulation[6] += pFramesIn[iFrame*2 + 0] * weights[6][0];
+                            accumulation[7] += pFramesIn[iFrame*2 + 0] * weights[7][0];
+
+                            accumulation[0] += pFramesIn[iFrame*2 + 1] * weights[0][1];
+                            accumulation[1] += pFramesIn[iFrame*2 + 1] * weights[1][1];
+                            accumulation[2] += pFramesIn[iFrame*2 + 1] * weights[2][1];
+                            accumulation[3] += pFramesIn[iFrame*2 + 1] * weights[3][1];
+                            accumulation[4] += pFramesIn[iFrame*2 + 1] * weights[4][1];
+                            accumulation[5] += pFramesIn[iFrame*2 + 1] * weights[5][1];
+                            accumulation[6] += pFramesIn[iFrame*2 + 1] * weights[6][1];
+                            accumulation[7] += pFramesIn[iFrame*2 + 1] * weights[7][1];
+
+                            pFramesOut[iFrame*8 + 0] = accumulation[0];
+                            pFramesOut[iFrame*8 + 1] = accumulation[1];
+                            pFramesOut[iFrame*8 + 2] = accumulation[2];
+                            pFramesOut[iFrame*8 + 3] = accumulation[3];
+                            pFramesOut[iFrame*8 + 4] = accumulation[4];
+                            pFramesOut[iFrame*8 + 5] = accumulation[5];
+                            pFramesOut[iFrame*8 + 6] = accumulation[6];
+                            pFramesOut[iFrame*8 + 7] = accumulation[7];
+                        }
+                    } else {
+                        /* When outputting to 8 channels, we can do everything in groups of two 4x SIMD operations. */
+                        for (; iFrame < frameCount; iFrame += 1) {
+                            float accumulation[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+
+                            for (iChannelIn = 0; iChannelIn < channelsIn; iChannelIn += 1) {
+                                accumulation[0] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[0][iChannelIn];
+                                accumulation[1] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[1][iChannelIn];
+                                accumulation[2] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[2][iChannelIn];
+                                accumulation[3] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[3][iChannelIn];
+                                accumulation[4] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[4][iChannelIn];
+                                accumulation[5] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[5][iChannelIn];
+                                accumulation[6] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[6][iChannelIn];
+                                accumulation[7] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[7][iChannelIn];
+                            }
+
+                            pFramesOut[iFrame*8 + 0] = accumulation[0];
+                            pFramesOut[iFrame*8 + 1] = accumulation[1];
+                            pFramesOut[iFrame*8 + 2] = accumulation[2];
+                            pFramesOut[iFrame*8 + 3] = accumulation[3];
+                            pFramesOut[iFrame*8 + 4] = accumulation[4];
+                            pFramesOut[iFrame*8 + 5] = accumulation[5];
+                            pFramesOut[iFrame*8 + 6] = accumulation[6];
+                            pFramesOut[iFrame*8 + 7] = accumulation[7];
+                        }
+                    }
+                } else if (channelsOut == 6) {
+                    /*
+                    When outputting to 6 channels we unfortunately don't have a nice multiple of 4 to do 4x SIMD operations. Instead we'll
+                    expand our weights and do two frames at a time.
+                    */
+                    for (; iFrame < frameCount; iFrame += 1) {
+                        float accumulation[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+                        for (iChannelIn = 0; iChannelIn < channelsIn; iChannelIn += 1) {
+                            accumulation[0] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[0][iChannelIn];
+                            accumulation[1] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[1][iChannelIn];
+                            accumulation[2] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[2][iChannelIn];
+                            accumulation[3] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[3][iChannelIn];
+                            accumulation[4] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[4][iChannelIn];
+                            accumulation[5] += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[5][iChannelIn];
+                        }
+
+                        pFramesOut[iFrame*6 + 0] = accumulation[0];
+                        pFramesOut[iFrame*6 + 1] = accumulation[1];
+                        pFramesOut[iFrame*6 + 2] = accumulation[2];
+                        pFramesOut[iFrame*6 + 3] = accumulation[3];
+                        pFramesOut[iFrame*6 + 4] = accumulation[4];
+                        pFramesOut[iFrame*6 + 5] = accumulation[5];
+                    }
+                }
+
+                /* Leftover frames. */
+                for (; iFrame < frameCount; iFrame += 1) {
                     for (iChannelOut = 0; iChannelOut < channelsOut; iChannelOut += 1) {
                         float accumulation = 0;
 
                         for (iChannelIn = 0; iChannelIn < channelsIn; iChannelIn += 1) {
-                            accumulation += pFramesIn[iChannelIn] * weights[iChannelOut][iChannelIn];
+                            accumulation += pFramesIn[iFrame*channelsIn + iChannelIn] * weights[iChannelOut][iChannelIn];
                         }
 
-                        pFramesOut[iChannelOut] = accumulation;
+                        pFramesOut[iFrame*channelsOut + iChannelOut] = accumulation;
                     }
-
-                    pFramesOut += channelsOut;
-                    pFramesIn  += channelsIn;
                 }
             } else {
                 /* Cannot pre-compute weights because not enough room in stack-allocated buffer. */
@@ -51743,14 +52138,11 @@ static void ma_channel_map_apply_f32(float* pFramesOut, const ma_channel* pChann
 
                         for (iChannelIn = 0; iChannelIn < channelsIn; iChannelIn += 1) {
                             ma_channel channelIn = ma_channel_map_get_channel(pChannelMapIn, channelsIn, iChannelIn);
-                            accumulation += pFramesIn[iChannelIn] * ma_calculate_channel_position_rectangular_weight(channelOut, channelIn);
+                            accumulation += pFramesIn[iFrame*channelsIn + iChannelIn] * ma_calculate_channel_position_rectangular_weight(channelOut, channelIn);
                         }
 
-                        pFramesOut[iChannelOut] = accumulation;
+                        pFramesOut[iFrame*channelsOut + iChannelOut] = accumulation;
                     }
-
-                    pFramesOut += channelsOut;
-                    pFramesIn  += channelsIn;
                 }
             }
         }
@@ -51932,7 +52324,7 @@ MA_API ma_result ma_channel_converter_init_preallocated(const ma_channel_convert
         /*
         We now need to fill out our weights table. This is determined by the mixing mode.
         */
-     
+
         /* In all cases we need to make sure all channels that are present in both channel maps have a 1:1 mapping. */
         for (iChannelIn = 0; iChannelIn < pConverter->channelsIn; ++iChannelIn) {
             ma_channel channelPosIn = ma_channel_map_get_channel(pConverter->pChannelMapIn, pConverter->channelsIn, iChannelIn);
@@ -64654,8 +65046,15 @@ MA_API ma_result ma_noise_set_type(ma_noise* pNoise, ma_noise_type type)
         return MA_INVALID_ARGS;
     }
 
-    pNoise->config.type = type;
-    return MA_SUCCESS;
+    /*
+    This function should never have been implemented in the first place. Changing the type dynamically is not
+    supported. Instead you need to uninitialize and reinitiailize a fresh `ma_noise` object. This function
+    will be removed in version 0.12.
+    */
+    MA_ASSERT(MA_FALSE);
+    (void)type;
+
+    return MA_INVALID_OPERATION;
 }
 
 static MA_INLINE float ma_noise_f32_white(ma_noise* pNoise)
@@ -66026,6 +66425,8 @@ static ma_result ma_resource_manager_data_buffer_uninit_connector(ma_resource_ma
     MA_ASSERT(pResourceManager != NULL);
     MA_ASSERT(pDataBuffer      != NULL);
 
+    (void)pResourceManager;
+
     switch (ma_resource_manager_data_buffer_node_get_data_supply_type(pDataBuffer->pNode))
     {
         case ma_resource_manager_data_supply_type_encoded:          /* Connector is a decoder. */
@@ -67029,7 +67430,7 @@ MA_API ma_result ma_resource_manager_data_buffer_read_pcm_frames(ma_resource_man
                 pDataBuffer->seekToCursorOnNextRead = MA_TRUE;  /* Keep the seek scheduled. We just haven't loaded enough data yet to do the seek properly. */
                 return MA_BUSY;
             }
-                
+
             return result;
         }
     }
@@ -67575,7 +67976,7 @@ MA_API ma_result ma_resource_manager_data_stream_init(ma_resource_manager* pReso
     config.pFilePath      = pFilePath;
     config.flags          = flags;
     config.pNotifications = pNotifications;
-    
+
     return ma_resource_manager_data_stream_init_ex(pResourceManager, &config, pDataStream);
 }
 
@@ -67587,7 +67988,7 @@ MA_API ma_result ma_resource_manager_data_stream_init_w(ma_resource_manager* pRe
     config.pFilePathW     = pFilePath;
     config.flags          = flags;
     config.pNotifications = pNotifications;
-    
+
     return ma_resource_manager_data_stream_init_ex(pResourceManager, &config, pDataStream);
 }
 
@@ -68700,7 +69101,7 @@ static ma_result ma_job_process__resource_manager__load_data_buffer(ma_job* pJob
     There is a hole between here and the where the data connector is initialized where the data
     buffer node may have finished initializing. We need to check for this by checking the result of
     the data buffer node and whether or not we had an unknown data supply type at the time of
-    trying to initialize the data connector. 
+    trying to initialize the data connector.
     */
     result = ma_resource_manager_data_buffer_node_result(pDataBuffer->pNode);
     if (result == MA_BUSY || (result == MA_SUCCESS && isConnectorInitialized == MA_FALSE && dataSupplyType == ma_resource_manager_data_supply_type_unknown)) {
@@ -69648,6 +70049,8 @@ static ma_result ma_node_input_bus_read_pcm_frames(ma_node* pInputNode, ma_node_
     ma_node_output_bus* pFirst;
     ma_uint32 inputChannels;
     ma_bool32 doesOutputBufferHaveContent = MA_FALSE;
+
+    (void)pInputNode;   /* Not currently used. */
 
     /*
     This will be called from the audio thread which means we can't be doing any locking. Basically,
@@ -70816,7 +71219,7 @@ static ma_result ma_node_read_pcm_frames(ma_node* pNode, ma_uint32 outputBusInde
             ma_node_output_bus_set_has_read(&pNodeBase->pOutputBuses[outputBusIndex], MA_TRUE);
         }
     }
-    
+
     /* Apply volume, if necessary. */
     ma_apply_volume_factor_f32(pFramesOut, totalFramesRead * ma_node_get_output_channels(pNodeBase, outputBusIndex), ma_node_output_bus_get_volume(&pNodeBase->pOutputBuses[outputBusIndex]));
 
@@ -72016,6 +72419,33 @@ static ma_uint64 ma_engine_node_get_required_input_frame_count(const ma_engine_n
     return inputFrameCount;
 }
 
+static ma_result ma_engine_node_set_volume(ma_engine_node* pEngineNode, float volume)
+{
+    if (pEngineNode == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    /* We should always have an active spatializer because it can be enabled and disabled dynamically. We can just use that for hodling our volume. */
+    ma_spatializer_set_master_volume(&pEngineNode->spatializer, volume);
+
+    return MA_SUCCESS;
+}
+
+static ma_result ma_engine_node_get_volume(const ma_engine_node* pEngineNode, float* pVolume)
+{
+    if (pVolume == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    *pVolume = 0.0f;
+
+    if (pEngineNode == NULL) {
+        return MA_INVALID_ARGS;
+    }
+
+    return ma_spatializer_get_master_volume(&pEngineNode->spatializer, pVolume);
+}
+
 static void ma_engine_node_process_pcm_frames__general(ma_engine_node* pEngineNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut)
 {
     ma_uint32 frameCountIn;
@@ -72141,13 +72571,17 @@ static void ma_engine_node_process_pcm_frames__general(ma_engine_node* pEngineNo
 
             ma_spatializer_process_pcm_frames(&pEngineNode->spatializer, &pEngineNode->pEngine->listeners[iListener], pRunningFramesOut, pWorkingBuffer, framesJustProcessedOut);
         } else {
-            /* No spatialization, but we still need to do channel conversion. */
+            /* No spatialization, but we still need to do channel conversion and master volume. */
+            float volume;
+            ma_engine_node_get_volume(pEngineNode, &volume);    /* Should never fail. */
+
             if (channelsIn == channelsOut) {
                 /* No channel conversion required. Just copy straight to the output buffer. */
-                ma_copy_pcm_frames(pRunningFramesOut, pWorkingBuffer, framesJustProcessedOut, ma_format_f32, channelsOut);
+                ma_copy_and_apply_volume_factor_f32(pRunningFramesOut, pWorkingBuffer, framesJustProcessedOut * channelsOut, volume);
             } else {
                 /* Channel conversion required. TODO: Add support for channel maps here. */
                 ma_channel_map_apply_f32(pRunningFramesOut, NULL, channelsOut, pWorkingBuffer, NULL, channelsIn, framesJustProcessedOut, ma_channel_mix_mode_simple, pEngineNode->monoExpansionMode);
+                ma_apply_volume_factor_f32(pRunningFramesOut, framesJustProcessedOut * channelsOut, volume);
             }
         }
 
@@ -72419,7 +72853,7 @@ static ma_result ma_engine_node_get_heap_layout(const ma_engine_node_config* pCo
     /* Resmapler. */
     resamplerConfig = ma_linear_resampler_config_init(ma_format_f32, channelsIn, 1, 1); /* Input and output sample rates don't affect the calculation of the heap size. */
     resamplerConfig.lpfOrder = 0;
-    
+
     result = ma_linear_resampler_get_heap_size(&resamplerConfig, &tempHeapSize);
     if (result != MA_SUCCESS) {
         return result;  /* Failed to retrieve the size of the heap for the resampler. */
@@ -72510,9 +72944,16 @@ MA_API ma_result ma_engine_node_init_preallocated(const ma_engine_node_config* p
     pEngineNode->isSpatializationDisabled = pConfig->isSpatializationDisabled;
     pEngineNode->pinnedListenerIndex      = pConfig->pinnedListenerIndex;
 
-
     channelsIn  = (pConfig->channelsIn  != 0) ? pConfig->channelsIn  : ma_engine_get_channels(pConfig->pEngine);
     channelsOut = (pConfig->channelsOut != 0) ? pConfig->channelsOut : ma_engine_get_channels(pConfig->pEngine);
+
+    /*
+    If the sample rate of the sound is different to the engine, make sure pitching is enabled so that the resampler
+    is activated. Not doing this will result in the sound not being resampled if MA_SOUND_FLAG_NO_PITCH is used.
+    */
+    if (pEngineNode->sampleRate != ma_engine_get_sample_rate(pEngineNode->pEngine)) {
+        pEngineNode->isPitchDisabled = MA_FALSE;
+    }
 
 
     /* Base node. */
@@ -72655,7 +73096,7 @@ MA_API ma_sound_config ma_sound_config_init_2(ma_engine* pEngine)
     } else {
         config.monoExpansionMode = ma_mono_expansion_mode_default;
     }
-    
+
     config.rangeEndInPCMFrames     = ~((ma_uint64)0);
     config.loopPointEndInPCMFrames = ~((ma_uint64)0);
 
@@ -72763,7 +73204,7 @@ MA_API ma_result ma_engine_init(const ma_engine_config* pConfig, ma_engine* pEng
     #if !defined(MA_NO_DEVICE_IO)
     {
         pEngine->pDevice = engineConfig.pDevice;
-    
+
         /* If we don't have a device, we need one. */
         if (pEngine->pDevice == NULL && engineConfig.noDevice == MA_FALSE) {
             ma_device_config deviceConfig;
@@ -72878,7 +73319,7 @@ MA_API ma_result ma_engine_init(const ma_engine_config* pConfig, ma_engine* pEng
                 Temporarily disabled. There is a subtle bug here where front-left and front-right
                 will be used by the device's channel map, but this is not what we want to use for
                 spatialization. Instead we want to use side-left and side-right. I need to figure
-                out a better solution for this. For now, disabling the user of device channel maps.
+                out a better solution for this. For now, disabling the use of device channel maps.
                 */
                 /*listenerConfig.pChannelMapOut = pEngine->pDevice->playback.channelMap;*/
             }
@@ -73890,17 +74331,20 @@ MA_API void ma_sound_set_volume(ma_sound* pSound, float volume)
         return;
     }
 
-    /* The volume is controlled via the output bus. */
-    ma_node_set_output_bus_volume(pSound, 0, volume);
+    ma_engine_node_set_volume(&pSound->engineNode, volume);
 }
 
 MA_API float ma_sound_get_volume(const ma_sound* pSound)
 {
+    float volume = 0;
+
     if (pSound == NULL) {
         return 0;
     }
 
-    return ma_node_get_output_bus_volume(pSound, 0);
+    ma_engine_node_get_volume(&pSound->engineNode, &volume);
+
+    return volume;
 }
 
 MA_API void ma_sound_set_pan(ma_sound* pSound, float pan)
@@ -74294,7 +74738,7 @@ MA_API void ma_sound_set_fade_in_milliseconds(ma_sound* pSound, float volumeBeg,
     ma_sound_set_fade_in_pcm_frames(pSound, volumeBeg, volumeEnd, (fadeLengthInMilliseconds * pSound->engineNode.fader.config.sampleRate) / 1000);
 }
 
-MA_API float ma_sound_get_current_fade_volume(ma_sound* pSound)
+MA_API float ma_sound_get_current_fade_volume(const ma_sound* pSound)
 {
     if (pSound == NULL) {
         return MA_INVALID_ARGS;
