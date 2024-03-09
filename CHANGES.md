@@ -1,10 +1,14 @@
 v0.11.22 - TBD
 =====================
+* Add `MA_SOUND_FLAG_LOOPING` and `MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_LOOPING` flags. These can be used to initialize sounds and resource managed data sources to loop by default. This is the recommended way to enable looping for streams. The `isLooping` config option in `ma_sound_config` and `ma_resource_manager_data_source_config` has been deprecated. If you are using those, you should switch to the new flag or else you'll get compiler errors when upgrading to a future version.
 * Fix a bug relating to node detachment.
+* Fix a bug where amplification with `ma_device_set_master_volume()` does not work.
+* Fix a bug where sounds loaded with `MA_SOUND_FLAG_DECODE` do not loop.
 * ALSA: Fix some warnings relating to unhandled return value of `read()`.
 * DirectSound: Add support for specifying an explicit window handle for SetCooperativeLevel().
 * Web: Fix ScriptProcessorNode path when compiling with `--closure=1`. Note that the Audio Worklets path is not currently working due to the callback specified in `emscripten_create_wasm_audio_worklet_processor_async` never getting fired.
 * Web: Fix an error with the unlocked notification when compiling as C++.
+* Web: Fix a JavaScript error when initializing and then uninitializing a context before any interactivity.
 * AAudio: The default minimum SDK version has been increased from 26 to 27 when enabling AAudio. If you need to support version 26, you can use `#define MA_AAUDIO_MIN_ANDROID_SDK_VERSION 26`.
 
 
@@ -180,7 +184,7 @@ v0.11.7 - 2022-02-06
 
 v0.11.6 - 2022-01-22
 ====================
-* WASAPI: Fix a bug where the device is not stopped when an error occurrs when writing to a playback device.
+* WASAPI: Fix a bug where the device is not stopped when an error occurs when writing to a playback device.
 * PulseAudio: Fix a rare crash due to a division by zero.
 * The node graph can now be used as a node. This allows node graphs to be connected to other node graphs.
 * Fix a crash with high-pass and band-pass filters.
@@ -474,7 +478,7 @@ v0.10.26 - 2020-11-24
 
 v0.10.25 - 2020-11-15
   - PulseAudio: Fix a bug where the stop callback isn't fired.
-  - WebAudio: Fix an error that occurs when Emscripten increases the size of it's heap.
+  - WebAudio: Fix an error that occurs when Emscripten increases the size of its heap.
   - Custom Backends: Change the onContextInit and onDeviceInit callbacks to take a parameter which is a pointer to the config that was
     passed into ma_context_init() and ma_device_init(). This replaces the deviceType parameter of onDeviceInit.
   - Fix compilation warnings on older versions of GCC.
